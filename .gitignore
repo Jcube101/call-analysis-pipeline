@@ -1,0 +1,48 @@
+# Audio files — never commit recordings or transcripts
+# The directories themselves are tracked via .gitkeep; only their contents are excluded
+input/*
+!input/.gitkeep
+output/*
+!output/.gitkeep
+*.mp3
+*.wav
+*.m4a
+*.flac
+*.ogg
+
+# Environment — secrets stay local
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Downloaded model weights (large files)
+whisper_models/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
