@@ -11,10 +11,13 @@ Steps:
 from __future__ import annotations
 
 import os
+import warnings
 from typing import Optional
 
 import numpy as np
-from pyannote.audio import Pipeline
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message="torchcodec is not installed", category=UserWarning)
+    from pyannote.audio import Pipeline
 from pydub import AudioSegment
 from pydub.effects import normalize
 
