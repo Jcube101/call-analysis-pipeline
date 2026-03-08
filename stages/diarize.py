@@ -101,8 +101,16 @@ def run(
     else:
         print("[Stage 2] Speaker count: auto-detect")
 
-    import torchaudio
-    waveform, sample_rate = torchaudio.load(clean_wav_path)
+    import soundfile as sf
+    import numpy as np
+    import torch
+
+    data, sample_rate = sf.read(clean_wav_path)
+    if data.ndim == 1:
+        data = data[np.newaxis, :]  # add channel dim
+    else:
+        data = data.T  # (samples, channels) -> (channels, samples)
+    waveform = torch.from_numpy(data).float()
     audio_input = {"waveform": waveform, "sample_rate": sample_rate}
     diarization = pipeline(audio_input, **diarize_kwargs)
 
