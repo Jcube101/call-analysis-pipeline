@@ -101,7 +101,10 @@ def run(
     else:
         print("[Stage 2] Speaker count: auto-detect")
 
-    diarization = pipeline(clean_wav_path, **diarize_kwargs)
+    import torchaudio
+    waveform, sample_rate = torchaudio.load(clean_wav_path)
+    audio_input = {"waveform": waveform, "sample_rate": sample_rate}
+    diarization = pipeline(audio_input, **diarize_kwargs)
 
     # Collect raw segments
     raw_segments = [
