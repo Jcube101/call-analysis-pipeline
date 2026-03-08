@@ -2,7 +2,9 @@
 
 ## Overview
 
-A local Python pipeline that processes a recorded two-person phone or voice call and produces a clean, structured transcript with speaker attribution. Designed to be run locally (no cloud audio processing), with all secrets managed via `.env`.
+A local Python pipeline that processes a recorded voice call and produces a clean, structured transcript with speaker attribution. Designed to run entirely locally (no cloud audio processing), with all secrets managed via `.env`.
+
+**Tested and working on Windows 11, Python 3.11, CPU-only torch.**
 
 ---
 
@@ -10,7 +12,7 @@ A local Python pipeline that processes a recorded two-person phone or voice call
 
 | Parameter | Source | Description |
 |-----------|--------|-------------|
-| `--input FILE` | CLI arg | Path to source audio file (MP3, WAV, M4A, or any ffmpeg-supported format) |
+| `--input FILE` | CLI arg | Path to source audio file (MP3, M4A, WAV, or any ffmpeg-supported format) |
 | `--context CTX` | CLI / `.env` | Conversation type: `friend`, `work`, `interview`, `date` |
 | `--num-speakers N` | CLI / `.env` | Integer speaker count, or omit for auto-detection |
 | `--whisper-model SIZE` | CLI / `.env` | Whisper model size: `tiny`, `base`, `small`, `medium` (default), `large` |
@@ -33,7 +35,7 @@ All outputs land in `output/`:
 
 ```
 # Call Transcript
-# Source:  test_call.mp3
+# Source:  call.m4a
 # Context: friend
 # Speakers: 2
 # Processed: 2024-01-15T14:30:00
@@ -47,7 +49,7 @@ All outputs land in `output/`:
 ```json
 {
   "metadata": {
-    "source_file": "test_call.mp3",
+    "source_file": "call.m4a",
     "context": "friend",
     "num_speakers": 2,
     "processed_at": "2024-01-15T14:30:00"
@@ -73,7 +75,7 @@ All outputs land in `output/`:
 
 | Step | Implementation |
 |------|---------------|
-| Load audio | `pydub.AudioSegment.from_file()` — supports any ffmpeg format |
+| Load audio | `pydub.AudioSegment.from_file()` — supports any ffmpeg format including M4A |
 | Standardise | Convert to mono, 16 kHz |
 | Noise reduction | `noisereduce.reduce_noise()` — spectral subtraction using first 0.5 s as noise profile; `stationary=False`, `prop_decrease=0.75` |
 | Loudness normalization | `pydub.effects.normalize()` |
@@ -91,8 +93,10 @@ All outputs land in `output/`:
 |------|---------------|
 | Model | `pyannote/speaker-diarization-3.1` via HuggingFace |
 | Auth | `HUGGINGFACE_TOKEN` from `.env` |
+| Audio input | Pre-loaded in-memory waveform dict `{"waveform": Tensor, "sample_rate": int}` — avoids torchcodec dependency |
 | Speaker count | Passed as `num_speakers` int (or `None` for auto-detection) |
 | GPU acceleration | Used automatically if `torch.cuda.is_available()` |
+| Output unwrapping | pyannote 3.x returns `DiarizeOutput`; `exclusive_speaker_diarization` attribute is the `Annotation` used for iteration |
 | Label mapping | `SPEAKER_00` → `Speaker A`, `SPEAKER_01` → `Speaker B`, etc. |
 | Per-speaker normalization | Each speaker's segments concatenated and normalized independently |
 
@@ -102,6 +106,10 @@ All outputs land in `output/`:
 ```
 
 **Prerequisites:** HuggingFace account with accepted license at `huggingface.co/pyannote/speaker-diarization-3.1`.
+
+**pyannote version note:** pyannote.audio 3.x wraps diarization results in a `DiarizeOutput` dataclass rather than returning a `pyannote.core.Annotation` directly. The pipeline resolves the correct annotation object with a fallback chain (see `diarize.py`).
+
+**torchcodec warning:** pyannote emits a `UserWarning` about `torchcodec` on import. This is suppressed because the pipeline uses the in-memory waveform path, which does not require torchcodec.
 
 ---
 
@@ -157,12 +165,22 @@ All outputs land in `output/`:
 
 | Requirement | Notes |
 |-------------|-------|
-| Python | 3.9+ |
+| Python | 3.9+ (tested on 3.11) |
 | ffmpeg | Must be on PATH; checked at startup |
 | RAM | ~4 GB minimum; Whisper `medium` needs ~3 GB |
 | Disk | ~2 GB for Whisper model cache |
 | GPU | Optional; used automatically by pyannote if CUDA is available |
 | OS | macOS, Linux, Windows (no Unix-only shell commands) |
+
+### Dependency install order (Windows / CPU-only)
+
+Due to pip resolution behaviour, torch must be installed before other packages or pip will pull in an incompatible torch+numpy combination:
+
+```bash
+pip install torch==2.1.0+cpu torchaudio==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
+pip install "numpy<2.0" --force-reinstall
+pip install -r requirements.txt
+```
 
 ---
 
