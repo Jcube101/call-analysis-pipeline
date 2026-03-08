@@ -3,7 +3,7 @@ pydub>=0.25.1
 noisereduce>=3.0.0
 librosa>=0.10.0
 scipy>=1.10.0
-numpy>=1.24.0
+numpy>=1.24,<2.0
 
 # Speaker diarization
 pyannote.audio>=3.1.0
@@ -12,10 +12,10 @@ soundfile>=0.12.0
 # Transcription (open-source Whisper, runs locally)
 openai-whisper>=20231117
 
-# PyTorch — CPU build; GPU users can swap for a CUDA wheel
-# See https://pytorch.org/get-started/locally/
-torch>=2.0.0
-torchaudio>=2.0.0
+# PyTorch — CPU build pinned for Windows + NumPy 1.x compatibility
+# Install with: pip install torch==2.1.0+cpu torchaudio==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
+torch==2.1.0+cpu
+torchaudio==2.1.0+cpu
 
 # Config / utilities
 python-dotenv>=1.0.0
