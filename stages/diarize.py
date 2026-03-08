@@ -79,7 +79,7 @@ def run(
     print(f"\n[Stage 2] Loading diarization pipeline (pyannote/speaker-diarization-3.1)...")
     pipeline = Pipeline.from_pretrained(
         "pyannote/speaker-diarization-3.1",
-        use_auth_token=settings.huggingface_token,
+        token=settings.huggingface_token,
     )
 
     # Move to GPU if available
