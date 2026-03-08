@@ -9,13 +9,14 @@ numpy>=1.24,<2.0
 pyannote.audio>=3.1.0
 soundfile>=0.12.0
 
-# Transcription (open-source Whisper, runs locally)
-openai-whisper>=20231117
+# Transcription — faster-whisper (CTranslate2-based, GPU-accelerated)
+faster-whisper>=1.0.0
 
-# PyTorch — CPU build pinned for Windows + NumPy 1.x compatibility
-# Install with: pip install torch==2.1.0+cpu torchaudio==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
-torch==2.1.0+cpu
-torchaudio==2.1.0+cpu
+# PyTorch — CUDA 11.8 build for NVIDIA GPU (GTX 1650 / sm_75)
+# Install with: pip install torch==2.1.0+cu118 torchaudio==2.1.0+cu118 --index-url https://download.pytorch.org/whl/cu118
+# For CPU-only fallback: pip install torch==2.1.0+cpu torchaudio==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
+torch==2.1.0+cu118
+torchaudio==2.1.0+cu118
 
 # Config / utilities
 python-dotenv>=1.0.0
