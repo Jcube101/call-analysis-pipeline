@@ -4,9 +4,9 @@ Tracks what's built, what's next, and what's planned further out.
 
 ---
 
-## Current state — v0.1 (complete)
+## Current state — v0.1 (complete, tested)
 
-The core pipeline is functional end-to-end:
+The core pipeline is functional end-to-end and has been validated on a real M4A call recording:
 
 - [x] Repo setup — `.gitignore`, `.env.example`, `README.md`, directory structure
 - [x] `config.py` — Settings dataclass, `.env` loading, CLI override support
@@ -15,6 +15,9 @@ The core pipeline is functional end-to-end:
 - [x] **Stage 3** — Whisper transcription (per-segment, local, offline)
 - [x] **Stage 4** — Structured export (`.txt` + `.json` with metadata header)
 - [x] `main.py` — CLI entry point with `ffmpeg` preflight check
+- [x] **First real-world test run** — validated on `First_Test_File.m4a` (121 s, 2 speakers, CPU)
+- [x] **pyannote 3.x API compatibility** — `DiarizeOutput` unwrapping + in-memory waveform passthrough
+- [x] **torchcodec warning suppression** — harmless warning filtered at import; root cause documented
 
 ---
 
@@ -24,9 +27,8 @@ Improvements to make the pipeline more robust and useful before adding new stage
 
 ### Must-have
 
-- [ ] **First real-world test run** — validate output quality on an actual call recording
 - [ ] **Error handling pass** — wrap each stage in try/except with clear failure messages; partial outputs should not silently corrupt the JSON
-- [ ] **Segment merging** — consecutive segments from the same speaker (< N ms apart) should be merged before transcription to reduce Whisper API calls and improve context
+- [ ] **Segment merging** — consecutive segments from the same speaker (< N ms apart) should be merged before transcription to reduce Whisper calls and improve context
 - [ ] **Language config** — make Whisper `language` param configurable via `.env` (`WHISPER_LANGUAGE`, default `en`)
 
 ### Nice-to-have
