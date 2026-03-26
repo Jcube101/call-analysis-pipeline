@@ -81,7 +81,7 @@ def run(
 
     print(f"\n[Stage 2] Loading diarization pipeline (pyannote/speaker-diarization-3.1)...")
     import huggingface_hub
-    huggingface_hub.login(token=settings.huggingface_token, new_session=False)
+    huggingface_hub.login(token=settings.huggingface_token)
     pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
 
     # Move to GPU if available
