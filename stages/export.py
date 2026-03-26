@@ -76,8 +76,13 @@ def run(
         "processed_at": datetime.now().isoformat(timespec="seconds"),
     }
 
+    # Build a filename stem: <source_basename>_<YYYYMMDD_HHMMSS>
+    source_stem = os.path.splitext(os.path.basename(source_file))[0]
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_stem = f"{source_stem}_{timestamp}"
+
     # --- TXT ---
-    txt_path = os.path.join(output_dir, "transcript.txt")
+    txt_path = os.path.join(output_dir, f"{file_stem}.txt")
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write(f"# Call Transcript\n")
         f.write(f"# Source:  {metadata['source_file']}\n")
@@ -105,7 +110,7 @@ def run(
         ],
     }
 
-    json_path = os.path.join(output_dir, "transcript.json")
+    json_path = os.path.join(output_dir, f"{file_stem}.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(json_payload, f, indent=2, ensure_ascii=False)
 
