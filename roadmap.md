@@ -4,22 +4,20 @@ Tracks what's built, what's next, and what's planned further out.
 
 ---
 
-## Current state — v0.1 (complete, GPU-accelerated)
+## Current state — v0.1 (complete, tested)
 
-The core pipeline is functional end-to-end and validated on a real M4A call recording with GPU acceleration:
+The core pipeline is functional end-to-end and has been validated on a real M4A call recording:
 
 - [x] Repo setup — `.gitignore`, `.env.example`, `README.md`, directory structure
 - [x] `config.py` — Settings dataclass, `.env` loading, CLI override support
 - [x] **Stage 1** — Audio pre-processing (noise reduction + normalization)
-- [x] **Stage 2** — Speaker diarization (pyannote/speaker-diarization-3.1, GPU)
-- [x] **Stage 3** — faster-whisper transcription (per-segment, local, GPU int8_float16)
-- [x] **Stage 4** — Structured export (timestamped `.txt` + `.json` per run)
-- [x] `main.py` — CLI entry point with ffmpeg preflight + GPU/device startup banner
-- [x] **First real-world test run** — validated on `First_Test_File.m4a` (121 s, 2 speakers)
-- [x] **GPU acceleration** — pyannote on CUDA, faster-whisper int8_float16 on GTX 1650
-- [x] **pyannote 3.x/4.x API compatibility** — DiarizeOutput unwrapping, huggingface_hub.login() auth
-- [x] **ctranslate2 Windows CUDA fix** — module-level model ref prevents mid-process teardown
-- [x] **Unique output filenames** — `<source>_<YYYYMMDD_HHMMSS>.txt/json` per run
+- [x] **Stage 2** — Speaker diarization (pyannote/speaker-diarization-3.1)
+- [x] **Stage 3** — Whisper transcription (per-segment, local, offline)
+- [x] **Stage 4** — Structured export (`.txt` + `.json` with metadata header)
+- [x] `main.py` — CLI entry point with `ffmpeg` preflight check
+- [x] **First real-world test run** — validated on `First_Test_File.m4a` (121 s, 2 speakers, CPU)
+- [x] **pyannote 3.x API compatibility** — `DiarizeOutput` unwrapping + in-memory waveform passthrough
+- [x] **torchcodec warning suppression** — harmless warning filtered at import; root cause documented
 
 ---
 

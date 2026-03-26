@@ -2,9 +2,9 @@
 
 ## Overview
 
-A local Python pipeline that processes a recorded voice call and produces a clean, structured transcript with speaker attribution. Runs fully locally (no cloud audio processing), GPU-accelerated, with all secrets managed via `.env`.
+A local Python pipeline that processes a recorded voice call and produces a clean, structured transcript with speaker attribution. Designed to run entirely locally (no cloud audio processing), with all secrets managed via `.env`.
 
-**Tested: Windows 11, Python 3.11, NVIDIA GeForce GTX 1650 (4 GB VRAM), CUDA 12.1.**
+**Tested and working on Windows 11, Python 3.11, CPU-only torch.**
 
 ---
 
@@ -92,11 +92,11 @@ All outputs land in `output/`. Each run produces uniquely named transcript files
 | Step | Implementation |
 |------|---------------|
 | Model | `pyannote/speaker-diarization-3.1` via HuggingFace |
-| Auth | `huggingface_hub.login(token=...)` before `Pipeline.from_pretrained()` |
-| Audio input | Pre-loaded in-memory dict `{"waveform": Tensor, "sample_rate": int}` — avoids torchcodec dependency |
+| Auth | `HUGGINGFACE_TOKEN` from `.env` |
+| Audio input | Pre-loaded in-memory waveform dict `{"waveform": Tensor, "sample_rate": int}` — avoids torchcodec dependency |
 | Speaker count | Passed as `num_speakers` int (or `None` for auto-detection) |
-| GPU acceleration | `pipeline.to(torch.device("cuda"))` if `torch.cuda.is_available()` |
-| Output unwrapping | pyannote 3.x returns `DiarizeOutput`; resolved via `itertracks` → `exclusive_speaker_diarization` fallback chain |
+| GPU acceleration | Used automatically if `torch.cuda.is_available()` |
+| Output unwrapping | pyannote 3.x returns `DiarizeOutput`; `exclusive_speaker_diarization` attribute is the `Annotation` used for iteration |
 | Label mapping | `SPEAKER_00` → `Speaker A`, `SPEAKER_01` → `Speaker B`, etc. |
 | Per-speaker normalization | Each speaker's segments concatenated and normalized independently |
 
@@ -108,6 +108,10 @@ All outputs land in `output/`. Each run produces uniquely named transcript files
 **Version notes:**
 - pyannote 4.0+ requires torch>=2.8.0 (does not exist) — pin `pyannote.audio<4.0`
 - huggingface_hub 1.0+ removed `use_auth_token` used internally by pyannote — pin `huggingface_hub<1.0.0`
+
+**pyannote version note:** pyannote.audio 3.x wraps diarization results in a `DiarizeOutput` dataclass rather than returning a `pyannote.core.Annotation` directly. The pipeline resolves the correct annotation object with a fallback chain (see `diarize.py`).
+
+**torchcodec warning:** pyannote emits a `UserWarning` about `torchcodec` on import. This is suppressed because the pipeline uses the in-memory waveform path, which does not require torchcodec.
 
 ---
 
@@ -168,22 +172,15 @@ All outputs land in `output/`. Each run produces uniquely named transcript files
 | GPU | Optional; CUDA 12.1 tested on GTX 1650 (sm_75) |
 | OS | macOS, Linux, Windows (no Unix-only shell commands) |
 
-### Dependency install order
+### Dependency install order (Windows / CPU-only)
+
+Due to pip resolution behaviour, torch must be installed before other packages or pip will pull in an incompatible torch+numpy combination:
 
 ```bash
-pip install torch==2.1.0+cu121 torchaudio==2.1.0+cu121 --index-url https://download.pytorch.org/whl/cu121
+pip install torch==2.1.0+cpu torchaudio==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
 pip install "numpy<2.0" --force-reinstall
 pip install -r requirements.txt
 ```
-
-### Key version constraints
-
-| Package | Constraint | Reason |
-|---------|-----------|--------|
-| `torch` | `==2.1.0+cu121` | Newer torch pulls in numpy 2.x |
-| `numpy` | `<2.0` | pyannote compiled against numpy 1.x |
-| `pyannote.audio` | `<4.0` | 4.0.4 requires torch>=2.8.0 (doesn't exist) |
-| `huggingface_hub` | `<1.0.0` | 1.x removed `use_auth_token` used by pyannote 3.x internals |
 
 ---
 
