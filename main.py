@@ -126,6 +126,7 @@ def main() -> None:
     )
 
     # --- Stage 4: Export ---
+    print("\n[DEBUG] Reached Stage 4")
     txt_path, json_path = export.run(
         segments=transcribed_segments,
         source_file=args.input,
