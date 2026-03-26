@@ -23,6 +23,12 @@ from tqdm import tqdm
 
 from config import settings
 
+# Module-level reference keeps the model alive until process exit.
+# ctranslate2's CUDA cleanup calls exit() when triggered mid-process on
+# Windows — holding the reference here defers cleanup to process shutdown
+# where it is handled safely.
+_active_model = None
+
 # Whisper expects 16 kHz mono float32
 _WHISPER_SR = 16_000
 
@@ -61,7 +67,9 @@ def run(
         device, compute_type = "cpu", "int8"
 
     print(f"\n[Stage 3] Loading faster-whisper '{model_name}' on {device} (downloads on first run)...")
+    global _active_model
     model = WhisperModel(model_name, device=device, compute_type=compute_type)
+    _active_model = model  # prevent GC / CUDA teardown until process exit
     print(f"[Stage 3] Model loaded. Transcribing {len(segments)} segment(s)...")
 
     audio = AudioSegment.from_wav(clean_wav_path)
@@ -93,7 +101,4 @@ def run(
         )
 
     print(f"[Stage 3] Transcription complete. {len(transcribed)} segment(s) produced.")
-    print("[DEBUG] transcribe.run() about to return")
-    del model
-    print("[DEBUG] model deleted, returning now")
     return transcribed
