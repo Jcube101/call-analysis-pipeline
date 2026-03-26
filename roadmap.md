@@ -23,8 +23,6 @@ The core pipeline is functional end-to-end and has been validated on a real M4A 
 
 ## Near-term — v0.2
 
-Improvements to make the pipeline more robust and useful before adding new stages.
-
 ### Must-have
 
 - [ ] **Error handling pass** — wrap each stage in try/except with clear failure messages; partial outputs should not silently corrupt the JSON
@@ -34,8 +32,8 @@ Improvements to make the pipeline more robust and useful before adding new stage
 ### Nice-to-have
 
 - [ ] **Dry-run mode** — `--dry-run` flag that validates config and input file without running the pipeline
-- [ ] **Stage skipping** — `--skip-preprocess` flag to pass a pre-cleaned WAV directly to Stage 2 (useful when re-running diarization on the same file)
-- [ ] **Progress summary** — print a clean summary table at the end (duration, segment count, speaker breakdown)
+- [ ] **Stage skipping** — `--skip-preprocess` flag to pass a pre-cleaned WAV directly to Stage 2
+- [ ] **Progress summary** — print a clean summary table at the end (duration, segment count, speaker breakdown, elapsed time)
 
 ---
 
@@ -51,7 +49,7 @@ The primary next major feature. After the transcript is produced:
   - `work` — action items, decisions made, open questions
   - `interview` — candidate strengths/weaknesses, follow-up questions
   - `date` — compatibility signals, conversation balance, topics of interest
-- [ ] Output a Markdown report to `output/report.md`
+- [ ] Output a Markdown report to `output/<name>_<timestamp>_report.md`
 - [ ] Add `--skip-analysis` flag to run pipeline without calling Claude API
 
 ### Large file support
@@ -65,16 +63,16 @@ The primary next major feature. After the transcript is produced:
 
 ### Quality improvements
 
-- [ ] **Speaker name mapping** — allow user to provide `--speaker-names "Alice,Bob"` to replace generic `Speaker A / Speaker B` labels in output
-- [ ] **Whisper word-level timestamps** — use Whisper's `word_timestamps=True` for finer-grained JSON output
-- [ ] **Confidence scores** — include Whisper segment-level log-probability in JSON output
+- [ ] **Speaker name mapping** — `--speaker-names "Alice,Bob"` to replace generic labels
+- [ ] **Whisper word-level timestamps** — `word_timestamps=True` for finer-grained JSON
+- [ ] **Confidence scores** — include Whisper segment-level log-probability in JSON
 - [ ] **Multi-language** — detect language per segment or accept `--language` override
 
 ### Usability
 
-- [ ] **Batch mode** — `python main.py --input-dir input/` to process all audio files in a directory
+- [ ] **Batch mode** — `python main.py --input-dir input/` to process all audio files
 - [ ] **Watch mode** — monitor `input/` and auto-process new files as they appear
-- [ ] **Config profiles** — named `.env` profiles (e.g. `--profile interview`) for quick context switching
+- [ ] **Config profiles** — named `.env` profiles (e.g. `--profile interview`)
 
 ### Infrastructure
 

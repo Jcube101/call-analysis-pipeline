@@ -27,6 +27,24 @@ def _check_ffmpeg() -> None:
         sys.exit(1)
 
 
+def _print_device_info() -> None:
+    """Print CUDA availability and which device each stage will use."""
+    try:
+        import torch
+        cuda_available = torch.cuda.is_available()
+        if cuda_available:
+            gpu_name = torch.cuda.get_device_name(0)
+            print(f"  CUDA:         available ({gpu_name})")
+            print(f"  Diarization:  GPU (pyannote → CUDA)")
+            print(f"  Transcription: GPU (faster-whisper int8_float16)")
+        else:
+            print(f"  CUDA:         not available")
+            print(f"  Diarization:  CPU")
+            print(f"  Transcription: CPU (faster-whisper int8)")
+    except ImportError:
+        print(f"  CUDA:         torch not found")
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="End-to-end call analysis pipeline: noise reduction → diarization → transcript"
@@ -84,6 +102,7 @@ def main() -> None:
     print(f"  Context:  {settings.context}")
     print(f"  Speakers: {settings.num_speakers or 'auto-detect'}")
     print(f"  Whisper:  {settings.whisper_model}")
+    _print_device_info()
     print("=" * 60)
 
     # --- Stage 1: Pre-processing ---

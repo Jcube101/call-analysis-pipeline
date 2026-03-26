@@ -6,8 +6,8 @@ This file gives Claude context about the call-analysis-pipeline project so it ca
 
 Takes an audio recording of a two-person conversation (MP3, M4A, WAV, or any ffmpeg-supported format) and outputs:
 1. A noise-reduced WAV (`output/*_clean.wav`)
-2. A speaker-diarized, timestamped transcript (`output/transcript.txt`)
-3. A structured JSON file ready for downstream analysis (`output/transcript.json`)
+2. A speaker-diarized, timestamped transcript (`output/<name>_<timestamp>.txt`)
+3. A structured JSON file ready for downstream analysis (`output/<name>_<timestamp>.json`)
 
 Future: auto-generate an analysis report via the Claude API (not yet implemented).
 
@@ -83,12 +83,19 @@ This avoids a dependency on `torchcodec` (which is not installed). A `UserWarnin
 | `NUM_SPEAKERS` | No | Integer or blank for auto-detect (default: auto) |
 | `WHISPER_MODEL` | No | `tiny` / `base` / `small` / `medium` / `large` (default: `medium`) |
 
-## Dependencies
+## Dependencies and install order
+
+Key packages: `pydub`, `noisereduce`, `pyannote.audio`, `faster-whisper`, `torch`, `soundfile`, `librosa`, `python-dotenv`, `tqdm`.
+System dependency: `ffmpeg` must be on PATH.
 
 Key packages: `pydub`, `noisereduce`, `pyannote.audio`, `openai-whisper`, `torch`, `soundfile`, `librosa`, `python-dotenv`, `tqdm`.
 System dependency: `ffmpeg` must be on PATH (`main.py` checks this on startup).
 
-Whisper's medium model (~1.5 GB) downloads automatically on first run to the default Whisper cache dir.
+Key version constraints (all in `requirements.txt`):
+- `torch==2.1.0+cu121` — newer torch requires numpy 2.x which breaks pyannote
+- `numpy<2.0` — pyannote compiled against numpy 1.x
+- `pyannote.audio<4.0` — 4.0.4 requires torch>=2.8.0 which doesn't exist yet
+- `huggingface_hub<1.0.0` — 1.x removed `use_auth_token` used internally by pyannote 3.x
 
 ## Install order matters (Windows / CPU-only)
 

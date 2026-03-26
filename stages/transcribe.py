@@ -1,24 +1,33 @@
 """
-Stage 3 — Whisper Transcription
+Stage 3 — Whisper Transcription (faster-whisper)
 
 Steps:
-  1. Load the Whisper model (downloads on first run if not cached)
+  1. Load the faster-whisper model (downloads on first run if not cached)
   2. For each diarization segment, slice the clean WAV and transcribe
   3. Return a list of enriched segment dicts including the transcribed text
+
+faster-whisper uses CTranslate2 under the hood and is significantly faster
+than openai-whisper, especially with CUDA. On GPU it runs with float16;
+on CPU it falls back to int8 quantization.
 """
 
 from __future__ import annotations
 
 import os
-import tempfile
 from typing import Optional
 
 import numpy as np
-import whisper
+from faster_whisper import WhisperModel
 from pydub import AudioSegment
 from tqdm import tqdm
 
 from config import settings
+
+# Module-level reference keeps the model alive until process exit.
+# ctranslate2's CUDA cleanup calls exit() when triggered mid-process on
+# Windows — holding the reference here defers cleanup to process shutdown
+# where it is handled safely.
+_active_model = None
 
 # Whisper expects 16 kHz mono float32
 _WHISPER_SR = 16_000
@@ -48,9 +57,19 @@ def run(
     Returns:
         The same segment list, each dict extended with a "text" key.
     """
+    import torch
+
     model_name = model_size or settings.whisper_model
-    print(f"\n[Stage 3] Loading Whisper model '{model_name}' (downloads on first run)...")
-    model = whisper.load_model(model_name)
+
+    if torch.cuda.is_available():
+        device, compute_type = "cuda", "int8_float16"
+    else:
+        device, compute_type = "cpu", "int8"
+
+    print(f"\n[Stage 3] Loading faster-whisper '{model_name}' on {device} (downloads on first run)...")
+    global _active_model
+    model = WhisperModel(model_name, device=device, compute_type=compute_type)
+    _active_model = model  # prevent GC / CUDA teardown until process exit
     print(f"[Stage 3] Model loaded. Transcribing {len(segments)} segment(s)...")
 
     audio = AudioSegment.from_wav(clean_wav_path)
@@ -67,9 +86,9 @@ def run(
 
         audio_array = _audio_segment_to_numpy(chunk)
 
-        # Whisper can take a numpy array directly
-        result = model.transcribe(audio_array, language="en", fp16=False)
-        text = result["text"].strip()
+        # faster-whisper returns (segments_generator, info) — consume the generator
+        fw_segments, _ = model.transcribe(audio_array, language="en")
+        text = " ".join(s.text.strip() for s in fw_segments).strip()
 
         transcribed.append(
             {

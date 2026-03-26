@@ -23,13 +23,13 @@ CLI flags override `.env` values when both are present.
 
 ## Outputs
 
-All outputs land in `output/`:
+All outputs land in `output/`. Each run produces uniquely named transcript files:
 
 | File | Format | Description |
 |------|--------|-------------|
-| `<name>_clean.wav` | WAV, mono, 16 kHz | Noise-reduced, normalized audio |
-| `transcript.txt` | Plain text | Human-readable labeled transcript |
-| `transcript.json` | JSON | Structured transcript with metadata header |
+| `<name>_clean.wav` | WAV, mono, 16 kHz | Noise-reduced, normalized audio (overwritten each run) |
+| `<name>_<YYYYMMDD_HHMMSS>.txt` | Plain text | Human-readable labeled transcript |
+| `<name>_<YYYYMMDD_HHMMSS>.json` | JSON | Structured transcript with metadata header |
 
 ### transcript.txt format
 
@@ -38,7 +38,7 @@ All outputs land in `output/`:
 # Source:  call.m4a
 # Context: friend
 # Speakers: 2
-# Processed: 2024-01-15T14:30:00
+# Processed: 2026-03-27T14:30:22
 
 [00:00:04] Speaker A: "Hey, how are you doing..."
 [00:01:12] Speaker B: "I'm good, just got back from..."
@@ -52,7 +52,7 @@ All outputs land in `output/`:
     "source_file": "call.m4a",
     "context": "friend",
     "num_speakers": 2,
-    "processed_at": "2024-01-15T14:30:00"
+    "processed_at": "2026-03-27T14:30:22"
   },
   "transcript": [
     {
@@ -105,7 +105,9 @@ All outputs land in `output/`:
 {"start": float, "end": float, "speaker": "Speaker A", "label": "SPEAKER_00"}
 ```
 
-**Prerequisites:** HuggingFace account with accepted license at `huggingface.co/pyannote/speaker-diarization-3.1`.
+**Version notes:**
+- pyannote 4.0+ requires torch>=2.8.0 (does not exist) — pin `pyannote.audio<4.0`
+- huggingface_hub 1.0+ removed `use_auth_token` used internally by pyannote — pin `huggingface_hub<1.0.0`
 
 **pyannote version note:** pyannote.audio 3.x wraps diarization results in a `DiarizeOutput` dataclass rather than returning a `pyannote.core.Annotation` directly. The pipeline resolves the correct annotation object with a fallback chain (see `diarize.py`).
 
@@ -115,20 +117,21 @@ All outputs land in `output/`:
 
 ### Stage 3 — Transcription (`stages/transcribe.py`)
 
-**Goal:** Add text to each diarized segment.
+**Goal:** Add text to each diarized segment using faster-whisper (CTranslate2-based).
 
 | Step | Implementation |
 |------|---------------|
-| Model | OpenAI Whisper (open-source, runs locally) |
-| Model size | Configurable via `WHISPER_MODEL` env var (default: `medium`) |
-| Input | Per-segment audio slices from Stage 1 clean WAV |
+| Model | faster-whisper (`WhisperModel`) — local, offline after first download |
+| GPU mode | `device="cuda", compute_type="int8_float16"` — fits in 4 GB VRAM |
+| CPU fallback | `device="cpu", compute_type="int8"` |
+| Input | Per-segment audio slices from Stage 1 clean WAV, converted to float32 numpy arrays |
 | Language | English (`language="en"`) — hardcoded for now |
-| Short segment filter | Segments < 500 ms are skipped (prevents Whisper hallucinations) |
-| FP16 | Disabled (`fp16=False`) for CPU compatibility |
+| Short segment filter | Segments < 500 ms are skipped (prevents hallucinations) |
+| Output | `(segments_generator, info)` — generator consumed and joined per segment |
+
+**CUDA teardown fix:** A module-level `_active_model` reference keeps the `WhisperModel` alive until process exit. Without it, ctranslate2's `__del__` calls `exit()` when the model is garbage-collected mid-process on Windows.
 
 **Output:** Segment list extended with `"text"` key per segment.
-
-**First-run note:** Whisper `medium` model (~1.5 GB) downloads to Whisper's default cache on first run.
 
 ---
 
@@ -138,6 +141,7 @@ All outputs land in `output/`:
 
 | Step | Implementation |
 |------|---------------|
+| Filename | `<source_stem>_<YYYYMMDD_HHMMSS>.txt/.json` — unique per run |
 | Metadata | Source file name, context tag, speaker count, ISO 8601 timestamp |
 | TXT | `[HH:MM:SS] Speaker X: "..."` per segment, with header comment block |
 | JSON | `{"metadata": {...}, "transcript": [...]}` with float timestamps rounded to 3 dp |
@@ -145,8 +149,6 @@ All outputs land in `output/`:
 ---
 
 ## Configuration (`config.py`)
-
-`Settings` is a dataclass that reads from `.env` via `python-dotenv`. A singleton `settings` object is imported by all modules.
 
 | Setting | Env var | Type | Default |
 |---------|---------|------|---------|
@@ -156,9 +158,6 @@ All outputs land in `output/`:
 | `num_speakers` | `NUM_SPEAKERS` | int \| None | `None` |
 | `whisper_model` | `WHISPER_MODEL` | str | `"medium"` |
 
-`settings.override()` applies CLI argument values on top of `.env` values.
-`settings.validate_for_diarization()` raises `EnvironmentError` if the HF token is missing.
-
 ---
 
 ## System requirements
@@ -167,9 +166,10 @@ All outputs land in `output/`:
 |-------------|-------|
 | Python | 3.9+ (tested on 3.11) |
 | ffmpeg | Must be on PATH; checked at startup |
-| RAM | ~4 GB minimum; Whisper `medium` needs ~3 GB |
-| Disk | ~2 GB for Whisper model cache |
-| GPU | Optional; used automatically by pyannote if CUDA is available |
+| RAM | ~4 GB minimum |
+| VRAM | 4 GB sufficient with int8_float16 compute type |
+| Disk | ~1.5 GB for faster-whisper medium model cache |
+| GPU | Optional; CUDA 12.1 tested on GTX 1650 (sm_75) |
 | OS | macOS, Linux, Windows (no Unix-only shell commands) |
 
 ### Dependency install order (Windows / CPU-only)
@@ -187,17 +187,17 @@ pip install -r requirements.txt
 ## Security / privacy
 
 - All audio processing is **fully local** — no audio is sent to any external service
-- Whisper runs offline after the initial model download
-- pyannote model weights are downloaded from HuggingFace once and cached locally
-- `.env` is gitignored; secrets are never committed
-- `input/` and `output/` are gitignored; recordings and transcripts are never committed
+- faster-whisper runs offline after initial model download
+- pyannote model weights downloaded from HuggingFace once, cached locally
+- `.env` is gitignored; secrets never committed
+- `input/` and `output/` are gitignored; recordings and transcripts never committed
 
 ---
 
 ## Deferred / out of scope (current version)
 
-- Large file chunking (>160 MB) — architecture supports it, not yet implemented
-- Multi-language support — Whisper `language` is hardcoded to `"en"`
-- Report generation via Claude API — `ANTHROPIC_API_KEY` is reserved for a future Stage 5
+- Large file chunking (>160 MB)
+- Multi-language support — Whisper `language` hardcoded to `"en"`
+- Report generation via Claude API — `ANTHROPIC_API_KEY` reserved for future Stage 5
 - Real-time / streaming processing
 - Web UI or REST API wrapper

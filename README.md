@@ -10,13 +10,14 @@ A Python pipeline that takes a recorded conversation and produces a clean, speak
 |-------|-------------|
 | 1 — Preprocess | Noise reduction + volume normalization via `noisereduce` and `pydub` |
 | 2 — Diarize | Speaker separation using `pyannote/speaker-diarization-3.1`; per-speaker loudness normalization |
-| 3 — Transcribe | Per-segment transcription with OpenAI Whisper (local, runs offline) |
-| 4 — Export | Structured `.txt` and `.json` output with metadata header |
+| 3 — Transcribe | Per-segment transcription with faster-whisper (local, GPU-accelerated) |
+| 4 — Export | Structured `.txt` and `.json` output with metadata header, uniquely named per run |
 
 Future stage (not yet implemented): auto-generated analysis report via the Claude API.
 
 ## Output
 
+Each run produces uniquely named files — no overwrites:
 ```
 output/
 ├── <name>_clean.wav    # Noise-reduced audio
@@ -26,6 +27,12 @@ output/
 
 **transcript.txt** looks like:
 ```
+# Call Transcript
+# Source:  call.m4a
+# Context: friend
+# Speakers: 2
+# Processed: 2026-03-27T14:30:22
+
 [00:00:04] Speaker A: "Hey, how are you doing..."
 [00:01:12] Speaker B: "I'm good, just got back from..."
 ```
@@ -37,7 +44,7 @@ output/
     "source_file": "call.m4a",
     "context": "friend",
     "num_speakers": 2,
-    "processed_at": "2024-01-15T14:30:00"
+    "processed_at": "2026-03-27T14:30:22"
   },
   "transcript": [
     {
@@ -54,7 +61,7 @@ output/
 
 ### Prerequisites
 
-- Python 3.9+
+- Python 3.9+ (tested on 3.11)
 - `ffmpeg` on your PATH
 
 **Install ffmpeg:**
@@ -104,8 +111,6 @@ Edit `.env` and fill in:
 
 ### Create local directories
 
-The `input/` and `output/` directories are gitignored. Create them manually:
-
 ```bash
 mkdir input output
 ```
@@ -118,15 +123,37 @@ Supports MP3, M4A, WAV, and any other ffmpeg-supported audio format:
 python main.py --input input/your_recording.m4a
 ```
 
-Optional overrides (take precedence over `.env`):
+Optional overrides:
 
 ```bash
 python main.py --input input/call.mp3 --context work --num-speakers 3
 ```
 
+The startup banner shows which device each stage will use:
+```
+============================================================
+  Call Analysis Pipeline
+  Input:    input/call.m4a
+  Context:  friend
+  Speakers: 2
+  Whisper:  medium
+  CUDA:         available (NVIDIA GeForce GTX 1650)
+  Diarization:  GPU (pyannote → CUDA)
+  Transcription: GPU (faster-whisper int8_float16)
+============================================================
+```
+
 ### First-run note
 
-Whisper's `medium` model (~1.5 GB) downloads automatically on first run. This is expected and only happens once.
+The faster-whisper `medium` model (~1.5 GB) downloads automatically on first run. This is expected and only happens once.
+
+### Known warnings
+
+You may see:
+```
+UserWarning: torchcodec is not installed correctly so built-in audio decoding will fail.
+```
+**Harmless** — audio is passed as a pre-loaded waveform so torchcodec is never used.
 
 ### Known warnings
 
@@ -147,7 +174,7 @@ call-analysis-pipeline/
 ├── stages/
 │   ├── preprocess.py     # Stage 1: noise reduction + normalization
 │   ├── diarize.py        # Stage 2: speaker diarization
-│   ├── transcribe.py     # Stage 3: Whisper transcription
+│   ├── transcribe.py     # Stage 3: faster-whisper transcription
 │   └── export.py         # Stage 4: output formatting
 ├── input/                # Place your audio files here (gitignored)
 ├── output/               # Pipeline outputs land here (gitignored)
