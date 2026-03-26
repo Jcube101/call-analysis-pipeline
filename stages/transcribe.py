@@ -93,4 +93,7 @@ def run(
         )
 
     print(f"[Stage 3] Transcription complete. {len(transcribed)} segment(s) produced.")
+    print("[DEBUG] transcribe.run() about to return")
+    del model
+    print("[DEBUG] model deleted, returning now")
     return transcribed
