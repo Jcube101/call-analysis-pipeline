@@ -4,36 +4,38 @@ Tracks what's built, what's next, and what's planned further out.
 
 ---
 
-## Current state — v0.1 (complete)
+## Current state — v0.1 (complete, GPU-accelerated)
 
-The core pipeline is functional end-to-end:
+The core pipeline is functional end-to-end and validated on a real M4A call recording with GPU acceleration:
 
 - [x] Repo setup — `.gitignore`, `.env.example`, `README.md`, directory structure
 - [x] `config.py` — Settings dataclass, `.env` loading, CLI override support
 - [x] **Stage 1** — Audio pre-processing (noise reduction + normalization)
-- [x] **Stage 2** — Speaker diarization (pyannote/speaker-diarization-3.1)
-- [x] **Stage 3** — Whisper transcription (per-segment, local, offline)
-- [x] **Stage 4** — Structured export (`.txt` + `.json` with metadata header)
-- [x] `main.py` — CLI entry point with `ffmpeg` preflight check
+- [x] **Stage 2** — Speaker diarization (pyannote/speaker-diarization-3.1, GPU)
+- [x] **Stage 3** — faster-whisper transcription (per-segment, local, GPU int8_float16)
+- [x] **Stage 4** — Structured export (timestamped `.txt` + `.json` per run)
+- [x] `main.py` — CLI entry point with ffmpeg preflight + GPU/device startup banner
+- [x] **First real-world test run** — validated on `First_Test_File.m4a` (121 s, 2 speakers)
+- [x] **GPU acceleration** — pyannote on CUDA, faster-whisper int8_float16 on GTX 1650
+- [x] **pyannote 3.x/4.x API compatibility** — DiarizeOutput unwrapping, huggingface_hub.login() auth
+- [x] **ctranslate2 Windows CUDA fix** — module-level model ref prevents mid-process teardown
+- [x] **Unique output filenames** — `<source>_<YYYYMMDD_HHMMSS>.txt/json` per run
 
 ---
 
 ## Near-term — v0.2
 
-Improvements to make the pipeline more robust and useful before adding new stages.
-
 ### Must-have
 
-- [ ] **First real-world test run** — validate output quality on an actual call recording
 - [ ] **Error handling pass** — wrap each stage in try/except with clear failure messages; partial outputs should not silently corrupt the JSON
-- [ ] **Segment merging** — consecutive segments from the same speaker (< N ms apart) should be merged before transcription to reduce Whisper API calls and improve context
+- [ ] **Segment merging** — consecutive segments from the same speaker (< N ms apart) should be merged before transcription to reduce Whisper calls and improve context
 - [ ] **Language config** — make Whisper `language` param configurable via `.env` (`WHISPER_LANGUAGE`, default `en`)
 
 ### Nice-to-have
 
 - [ ] **Dry-run mode** — `--dry-run` flag that validates config and input file without running the pipeline
-- [ ] **Stage skipping** — `--skip-preprocess` flag to pass a pre-cleaned WAV directly to Stage 2 (useful when re-running diarization on the same file)
-- [ ] **Progress summary** — print a clean summary table at the end (duration, segment count, speaker breakdown)
+- [ ] **Stage skipping** — `--skip-preprocess` flag to pass a pre-cleaned WAV directly to Stage 2
+- [ ] **Progress summary** — print a clean summary table at the end (duration, segment count, speaker breakdown, elapsed time)
 
 ---
 
@@ -49,7 +51,7 @@ The primary next major feature. After the transcript is produced:
   - `work` — action items, decisions made, open questions
   - `interview` — candidate strengths/weaknesses, follow-up questions
   - `date` — compatibility signals, conversation balance, topics of interest
-- [ ] Output a Markdown report to `output/report.md`
+- [ ] Output a Markdown report to `output/<name>_<timestamp>_report.md`
 - [ ] Add `--skip-analysis` flag to run pipeline without calling Claude API
 
 ### Large file support
@@ -63,16 +65,16 @@ The primary next major feature. After the transcript is produced:
 
 ### Quality improvements
 
-- [ ] **Speaker name mapping** — allow user to provide `--speaker-names "Alice,Bob"` to replace generic `Speaker A / Speaker B` labels in output
-- [ ] **Whisper word-level timestamps** — use Whisper's `word_timestamps=True` for finer-grained JSON output
-- [ ] **Confidence scores** — include Whisper segment-level log-probability in JSON output
+- [ ] **Speaker name mapping** — `--speaker-names "Alice,Bob"` to replace generic labels
+- [ ] **Whisper word-level timestamps** — `word_timestamps=True` for finer-grained JSON
+- [ ] **Confidence scores** — include Whisper segment-level log-probability in JSON
 - [ ] **Multi-language** — detect language per segment or accept `--language` override
 
 ### Usability
 
-- [ ] **Batch mode** — `python main.py --input-dir input/` to process all audio files in a directory
+- [ ] **Batch mode** — `python main.py --input-dir input/` to process all audio files
 - [ ] **Watch mode** — monitor `input/` and auto-process new files as they appear
-- [ ] **Config profiles** — named `.env` profiles (e.g. `--profile interview`) for quick context switching
+- [ ] **Config profiles** — named `.env` profiles (e.g. `--profile interview`)
 
 ### Infrastructure
 
