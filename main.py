@@ -4,6 +4,7 @@ main.py — entry point for the call analysis pipeline.
 Usage:
     python main.py --input input/call.mp3
     python main.py --input input/call.mp3 --context work --num-speakers 3
+    python main.py --input input/call.mp3 --transcription-mode accurate
 """
 
 import argparse
@@ -76,6 +77,13 @@ def _parse_args() -> argparse.Namespace:
         dest="whisper_model",
         help="Whisper model size: tiny | base | small | medium | large (default: medium)",
     )
+    parser.add_argument(
+        "--transcription-mode",
+        metavar="MODE",
+        default=None,
+        dest="transcription_mode",
+        help="Transcription strategy: fast | accurate (default: fast)",
+    )
     return parser.parse_args()
 
 
@@ -89,7 +97,11 @@ def main() -> None:
         sys.exit(1)
 
     # Apply CLI overrides on top of .env settings
-    settings.override(context=args.context, num_speakers=args.num_speakers)
+    settings.override(
+        context=args.context,
+        num_speakers=args.num_speakers,
+        transcription_mode=args.transcription_mode,
+    )
     if args.whisper_model:
         settings.whisper_model = args.whisper_model
 
@@ -102,6 +114,7 @@ def main() -> None:
     print(f"  Context:  {settings.context}")
     print(f"  Speakers: {settings.num_speakers or 'auto-detect'}")
     print(f"  Whisper:  {settings.whisper_model}")
+    print(f"  Tx Mode:  {settings.transcription_mode}")
     _print_device_info()
     print("=" * 60)
 
@@ -123,6 +136,7 @@ def main() -> None:
         clean_wav_path=clean_wav,
         segments=segments,
         model_size=settings.whisper_model,
+        mode=settings.transcription_mode,
     )
 
     # --- Stage 4: Export ---

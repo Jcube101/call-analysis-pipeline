@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 VALID_CONTEXTS = {"friend", "work", "interview", "date"}
+VALID_TRANSCRIPTION_MODES = {"fast", "accurate"}
 
 
 @dataclass
@@ -29,6 +30,11 @@ class Settings:
 
     # Whisper model size — "tiny", "base", "small", "medium", "large"
     whisper_model: str = field(default_factory=lambda: os.getenv("WHISPER_MODEL", "medium"))
+
+    # Transcription mode — "fast" (one pass, speaker alignment) or "accurate" (per-segment)
+    transcription_mode: str = field(
+        default_factory=lambda: os.getenv("TRANSCRIPTION_MODE", "fast")
+    )
 
     def __post_init__(self) -> None:
         # Parse NUM_SPEAKERS from env if not overridden programmatically
@@ -47,7 +53,21 @@ class Settings:
             )
             self.context = "friend"
 
-    def override(self, context: Optional[str] = None, num_speakers: Optional[int] = None) -> None:
+        # Normalise and validate transcription_mode
+        self.transcription_mode = self.transcription_mode.strip().lower()
+        if self.transcription_mode not in VALID_TRANSCRIPTION_MODES:
+            print(
+                f"[config] Warning: TRANSCRIPTION_MODE '{self.transcription_mode}' is not one of "
+                f"{sorted(VALID_TRANSCRIPTION_MODES)}. Defaulting to 'fast'."
+            )
+            self.transcription_mode = "fast"
+
+    def override(
+        self,
+        context: Optional[str] = None,
+        num_speakers: Optional[int] = None,
+        transcription_mode: Optional[str] = None,
+    ) -> None:
         """Apply CLI overrides on top of .env values."""
         if context is not None:
             self.context = context.strip().lower()
@@ -59,6 +79,13 @@ class Settings:
             if num_speakers < 1:
                 raise ValueError("--num-speakers must be a positive integer")
             self.num_speakers = num_speakers
+        if transcription_mode is not None:
+            self.transcription_mode = transcription_mode.strip().lower()
+            if self.transcription_mode not in VALID_TRANSCRIPTION_MODES:
+                raise ValueError(
+                    f"--transcription-mode must be one of "
+                    f"{sorted(VALID_TRANSCRIPTION_MODES)}, got '{transcription_mode}'"
+                )
 
     def validate_for_diarization(self) -> None:
         """Raise if the HuggingFace token is missing (required for pyannote)."""
