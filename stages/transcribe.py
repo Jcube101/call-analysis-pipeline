@@ -56,7 +56,7 @@ def run(
     model_name = model_size or settings.whisper_model
 
     if torch.cuda.is_available():
-        device, compute_type = "cuda", "float16"
+        device, compute_type = "cuda", "int8_float16"
     else:
         device, compute_type = "cpu", "int8"
 

@@ -36,7 +36,7 @@ def _print_device_info() -> None:
             gpu_name = torch.cuda.get_device_name(0)
             print(f"  CUDA:         available ({gpu_name})")
             print(f"  Diarization:  GPU (pyannote → CUDA)")
-            print(f"  Transcription: GPU (faster-whisper float16)")
+            print(f"  Transcription: GPU (faster-whisper int8_float16)")
         else:
             print(f"  CUDA:         not available")
             print(f"  Diarization:  CPU")
