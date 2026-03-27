@@ -116,19 +116,24 @@ def run(
     audio_input = {"waveform": waveform, "sample_rate": sample_rate}
     diarization = pipeline(audio_input, **diarize_kwargs)
 
-    # Collect raw segments — handle different pyannote output types across versions
+    # Resolve the annotation object — pyannote 3.x wraps results in DiarizeOutput
     if hasattr(diarization, "itertracks"):
-        raw_segments = [
-            {"start": segment.start, "end": segment.end, "label": speaker}
-            for segment, track, speaker in diarization.itertracks(yield_label=True)
-        ]
+        annotation = diarization
+    elif hasattr(diarization, "exclusive_speaker_diarization"):
+        annotation = diarization.exclusive_speaker_diarization
+    elif hasattr(diarization, "speaker_diarization"):
+        annotation = diarization.speaker_diarization
     else:
-        print(f"[Stage 2] DEBUG: diarization type = {type(diarization)}")
-        print(f"[Stage 2] DEBUG: diarization attrs = {[a for a in dir(diarization) if not a.startswith('_')]}")
         raise RuntimeError(
-            "[Stage 2] Diarization output has no 'itertracks' method. "
-            "See DEBUG lines above to determine the correct API for this pyannote version."
+            f"[Stage 2] Cannot parse diarization output of type {type(diarization)}. "
+            f"Available attrs: {[a for a in dir(diarization) if not a.startswith('_')]}"
         )
+
+    # Collect raw segments
+    raw_segments = [
+        {"start": segment.start, "end": segment.end, "label": speaker}
+        for segment, track, speaker in annotation.itertracks(yield_label=True)
+    ]
 
     if not raw_segments:
         raise RuntimeError(

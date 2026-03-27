@@ -4,7 +4,7 @@ This file gives Claude context about the call-analysis-pipeline project so it ca
 
 ## What this project does
 
-Takes an audio recording of a conversation (MP3, M4A, WAV, MPEG, or any ffmpeg-supported format) and outputs:
+Takes an audio recording of a two-person conversation (MP3, M4A, WAV, or any ffmpeg-supported format) and outputs:
 1. A noise-reduced WAV (`output/*_clean.wav`)
 2. A speaker-diarized, timestamped transcript (`output/<name>_<timestamp>.txt`)
 3. A structured JSON file ready for downstream analysis (`output/<name>_<timestamp>.json`)
@@ -13,7 +13,7 @@ Future: auto-generate an analysis report via the Claude API (not yet implemented
 
 ## Status
 
-**v0.2 is fully functional and tested end-to-end with GPU acceleration** on real call recordings (GTX 1650, CUDA 12.1, Windows 11, Python 3.11). Tested on files up to 10:56 in length.
+**v0.1 is fully functional and tested end-to-end** on a real M4A call recording. All four stages run correctly on Windows with CPU-only torch.
 
 ## How to run
 
@@ -38,8 +38,8 @@ config.py        — Settings dataclass, loads .env via python-dotenv
 stages/
   preprocess.py  — Stage 1: noise reduction + normalization (pydub, noisereduce)
   diarize.py     — Stage 2: speaker diarization (pyannote/speaker-diarization-3.1)
-  transcribe.py  — Stage 3: faster-whisper transcription (runs locally, GPU-accelerated)
-  export.py      — Stage 4: writes timestamped .txt and .json output
+  transcribe.py  — Stage 3: Whisper transcription (openai-whisper, runs locally)
+  export.py      — Stage 4: writes .txt and .json output with metadata header
 input/           — place source audio files here (gitignored, must exist locally)
 output/          — pipeline outputs land here (gitignored, must exist locally)
 ```
@@ -53,54 +53,31 @@ output/          — pipeline outputs land here (gitignored, must exist locally)
 - **No chunking yet** — large file support is deferred, but don't architect it out. Keep it in mind when touching Stage 1 or 3.
 - **Error handling** — each stage call in `main.py` is wrapped in try/except. Failures print `[error] Stage N (name) failed: <message>` and exit with code 1.
 
-## Output filenames
+## pyannote API compatibility (important)
 
-Each run produces uniquely named files using the source filename + timestamp:
-```
-output/First_Test_File_20260327_143022.txt
-output/First_Test_File_20260327_143022.json
-output/First_Test_File_clean.wav
-```
-The clean WAV is overwritten each run (Stage 1 output). The transcripts are never overwritten.
-
-## GPU / transcription stack
-
-Transcription uses **faster-whisper** (CTranslate2-based) instead of openai-whisper:
-- On CUDA: `device="cuda", compute_type="int8_float16"` — fits in 4 GB VRAM
-- On CPU: `device="cpu", compute_type="int8"`
-
-**ctranslate2 CUDA teardown bug (Windows):** ctranslate2's `__del__` calls `exit()` when the WhisperModel is garbage-collected mid-process on Windows. Fixed by holding a module-level reference (`_active_model`) so cleanup is deferred to process exit. Do not add `del model` inside `transcribe.run()`.
-
-## Transcription modes
-
-Two modes selectable via `TRANSCRIPTION_MODE` env var or `--transcription-mode` CLI flag:
-
-- **accurate** (default): one `model.transcribe()` call per diarization segment. Produces fine-grained sentence-level output. ~1x real-time on GTX 1650.
-- **fast**: one `model.transcribe()` call on the full WAV, then speaker assignment via max-overlap with diarization windows. ~20% faster but produces far fewer lines — Whisper's internal ~30s chunking limits granularity to ~4 segments for a 2-min file. Only use when coarse output is acceptable.
-
-**Do not** pre-merge diarization segments before transcription. pyannote commonly outputs many same-speaker segments with tiny gaps (<100ms) between them — any gap threshold collapses entire speaking turns into one line.
-
-## pyannote API compatibility
-
-pyannote.audio 3.x no longer returns a `pyannote.core.Annotation` directly — it returns a `DiarizeOutput` dataclass. `diarize.py` handles this with a fallback chain checking `itertracks` → `exclusive_speaker_diarization` → `speaker_diarization`.
-
-## HuggingFace authentication
-
-pyannote 3.4.0 + huggingface_hub 0.x: `Pipeline.from_pretrained()` no longer accepts `token=` or `use_auth_token=` as keyword arguments. Use `huggingface_hub.login(token=...)` before calling `from_pretrained()`:
+pyannote.audio 3.x no longer returns a `pyannote.core.Annotation` directly from the pipeline. It returns a `DiarizeOutput` dataclass with the annotation stored in the `exclusive_speaker_diarization` attribute. `diarize.py` handles this with a fallback chain:
 
 ```python
-huggingface_hub.login(token=settings.huggingface_token)
-pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
+if hasattr(diarization, "itertracks"):          # old API
+    annotation = diarization
+elif hasattr(diarization, "exclusive_speaker_diarization"):  # new API (3.x)
+    annotation = diarization.exclusive_speaker_diarization
+elif hasattr(diarization, "speaker_diarization"):
+    annotation = diarization.speaker_diarization
 ```
 
-## Audio input to pyannote
+Do not revert this to a direct `.itertracks()` call on the pipeline output.
 
-Audio is passed as a pre-loaded in-memory dict — not a file path — to avoid the `torchcodec` dependency:
+## Audio input to pyannote (important)
+
+Audio is passed to the pyannote pipeline as a pre-loaded in-memory dict — **not** as a file path:
+
 ```python
 audio_input = {"waveform": waveform, "sample_rate": sample_rate}
 diarization = pipeline(audio_input, ...)
 ```
-The `torchcodec` UserWarning on import is suppressed since it is irrelevant to this path.
+
+This avoids a dependency on `torchcodec` (which is not installed). A `UserWarning` about torchcodec is suppressed at import time since it is irrelevant when using this approach.
 
 ## Environment variables
 
@@ -119,18 +96,24 @@ The `torchcodec` UserWarning on import is suppressed since it is irrelevant to t
 Key packages: `pydub`, `noisereduce`, `pyannote.audio`, `faster-whisper`, `torch`, `soundfile`, `librosa`, `python-dotenv`, `tqdm`.
 System dependency: `ffmpeg` must be on PATH.
 
-**Install order matters — run in this exact sequence:**
-```bash
-pip install torch==2.1.0+cu121 torchaudio==2.1.0+cu121 --index-url https://download.pytorch.org/whl/cu121
-pip install "numpy<2.0" --force-reinstall
-pip install -r requirements.txt
-```
+Key packages: `pydub`, `noisereduce`, `pyannote.audio`, `openai-whisper`, `torch`, `soundfile`, `librosa`, `python-dotenv`, `tqdm`.
+System dependency: `ffmpeg` must be on PATH (`main.py` checks this on startup).
 
 Key version constraints (all in `requirements.txt`):
 - `torch==2.1.0+cu121` — newer torch requires numpy 2.x which breaks pyannote
 - `numpy<2.0` — pyannote compiled against numpy 1.x
 - `pyannote.audio<4.0` — 4.0.4 requires torch>=2.8.0 which doesn't exist yet
 - `huggingface_hub<1.0.0` — 1.x removed `use_auth_token` used internally by pyannote 3.x
+
+## Install order matters (Windows / CPU-only)
+
+Install torch **before** everything else so pip doesn't pull in a newer incompatible version later:
+
+```bash
+pip install torch==2.1.0+cpu torchaudio==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
+pip install "numpy<2.0" --force-reinstall
+pip install -r requirements.txt
+```
 
 ## What NOT to commit
 
