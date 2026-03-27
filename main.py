@@ -5,6 +5,7 @@ Usage:
     python main.py --input input/call.mp3
     python main.py --input input/call.mp3 --context work --num-speakers 3
     python main.py --input input/call.mp3 --transcription-mode accurate
+    python main.py --input input/call.mp3 --language fr
 """
 
 import argparse
@@ -84,6 +85,13 @@ def _parse_args() -> argparse.Namespace:
         dest="transcription_mode",
         help="Transcription strategy: fast | accurate (default: fast)",
     )
+    parser.add_argument(
+        "--language",
+        metavar="LANG",
+        default=None,
+        dest="language",
+        help="Whisper language code, e.g. en, fr, es (default: en)",
+    )
     return parser.parse_args()
 
 
@@ -101,6 +109,7 @@ def main() -> None:
         context=args.context,
         num_speakers=args.num_speakers,
         transcription_mode=args.transcription_mode,
+        language=args.language,
     )
     if args.whisper_model:
         settings.whisper_model = args.whisper_model
@@ -115,38 +124,58 @@ def main() -> None:
     print(f"  Speakers: {settings.num_speakers or 'auto-detect'}")
     print(f"  Whisper:  {settings.whisper_model}")
     print(f"  Tx Mode:  {settings.transcription_mode}")
+    print(f"  Language: {settings.whisper_language}")
     _print_device_info()
     print("=" * 60)
 
     # --- Stage 1: Pre-processing ---
-    clean_wav = preprocess.run(
-        input_path=args.input,
-        output_dir=output_dir,
-    )
+    try:
+        clean_wav = preprocess.run(
+            input_path=args.input,
+            output_dir=output_dir,
+        )
+    except Exception as e:
+        print(f"\n[error] Stage 1 (pre-processing) failed: {e}")
+        sys.exit(1)
 
     # --- Stage 2: Diarization ---
-    segments = diarize.run(
-        clean_wav_path=clean_wav,
-        output_dir=output_dir,
-        num_speakers=settings.num_speakers,
-    )
+    try:
+        segments = diarize.run(
+            clean_wav_path=clean_wav,
+            output_dir=output_dir,
+            num_speakers=settings.num_speakers,
+        )
+    except EnvironmentError as e:
+        print(f"\n[error] Stage 2 (diarization) configuration error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n[error] Stage 2 (diarization) failed: {e}")
+        sys.exit(1)
 
     # --- Stage 3: Transcription ---
-    transcribed_segments = transcribe.run(
-        clean_wav_path=clean_wav,
-        segments=segments,
-        model_size=settings.whisper_model,
-        mode=settings.transcription_mode,
-    )
+    try:
+        transcribed_segments = transcribe.run(
+            clean_wav_path=clean_wav,
+            segments=segments,
+            model_size=settings.whisper_model,
+            mode=settings.transcription_mode,
+        )
+    except Exception as e:
+        print(f"\n[error] Stage 3 (transcription) failed: {e}")
+        sys.exit(1)
 
     # --- Stage 4: Export ---
-    txt_path, json_path = export.run(
-        segments=transcribed_segments,
-        source_file=args.input,
-        output_dir=output_dir,
-        context=settings.context,
-        num_speakers=settings.num_speakers,
-    )
+    try:
+        txt_path, json_path = export.run(
+            segments=transcribed_segments,
+            source_file=args.input,
+            output_dir=output_dir,
+            context=settings.context,
+            num_speakers=settings.num_speakers,
+        )
+    except Exception as e:
+        print(f"\n[error] Stage 4 (export) failed: {e}")
+        sys.exit(1)
 
     print("\n" + "=" * 60)
     print("  Pipeline complete!")

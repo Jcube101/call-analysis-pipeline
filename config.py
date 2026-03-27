@@ -36,6 +36,11 @@ class Settings:
         default_factory=lambda: os.getenv("TRANSCRIPTION_MODE", "fast")
     )
 
+    # Whisper language — BCP-47 code passed to faster-whisper (e.g. "en", "fr", "es")
+    whisper_language: str = field(
+        default_factory=lambda: os.getenv("WHISPER_LANGUAGE", "en")
+    )
+
     def __post_init__(self) -> None:
         # Parse NUM_SPEAKERS from env if not overridden programmatically
         if self.num_speakers is None:
@@ -67,6 +72,7 @@ class Settings:
         context: Optional[str] = None,
         num_speakers: Optional[int] = None,
         transcription_mode: Optional[str] = None,
+        language: Optional[str] = None,
     ) -> None:
         """Apply CLI overrides on top of .env values."""
         if context is not None:
@@ -86,6 +92,8 @@ class Settings:
                     f"--transcription-mode must be one of "
                     f"{sorted(VALID_TRANSCRIPTION_MODES)}, got '{transcription_mode}'"
                 )
+        if language is not None:
+            self.whisper_language = language.strip().lower()
 
     def validate_for_diarization(self) -> None:
         """Raise if the HuggingFace token is missing (required for pyannote)."""
