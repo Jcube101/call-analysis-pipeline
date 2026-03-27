@@ -11,6 +11,10 @@ Two modes, selectable via TRANSCRIPTION_MODE in .env or --transcription-mode CLI
   accurate:
     One model.transcribe() call per diarization segment. Perfect speaker boundary
     accuracy at the cost of per-segment overhead (~3 s/seg on GPU).
+
+In both modes, consecutive diarization segments from the same speaker that are
+within SPEAKER_MERGE_GAP_S seconds of each other are merged before transcription,
+reducing the number of segments and improving Whisper's context window.
 """
 
 from __future__ import annotations
@@ -34,6 +38,10 @@ _active_model = None
 # Whisper expects 16 kHz mono float32
 _WHISPER_SR = 16_000
 
+# Diarization segments from the same speaker within this gap are merged
+# before transcription to reduce Whisper calls and improve context.
+_SPEAKER_MERGE_GAP_S = 0.5
+
 
 def _audio_segment_to_numpy(segment: AudioSegment) -> np.ndarray:
     """Convert a pydub AudioSegment to a float32 numpy array for Whisper."""
@@ -41,6 +49,26 @@ def _audio_segment_to_numpy(segment: AudioSegment) -> np.ndarray:
     samples = np.array(seg.get_array_of_samples(), dtype=np.float32)
     samples /= float(2 ** (seg.sample_width * 8 - 1))
     return samples
+
+
+def _merge_diarization_segments(segments: list[dict], gap_s: float = _SPEAKER_MERGE_GAP_S) -> list[dict]:
+    """
+    Merge consecutive diarization segments from the same speaker that are
+    within gap_s seconds of each other.
+
+    Reduces the number of model.transcribe() calls in accurate mode and
+    gives Whisper more context per call.
+    """
+    if not segments:
+        return segments
+    merged = [dict(segments[0])]
+    for seg in segments[1:]:
+        prev = merged[-1]
+        if seg["speaker"] == prev["speaker"] and (seg["start"] - prev["end"]) <= gap_s:
+            prev["end"] = seg["end"]
+        else:
+            merged.append(dict(seg))
+    return merged
 
 
 def _assign_speakers(fw_segs: list, diar_segs: list[dict]) -> list[dict]:
@@ -110,7 +138,7 @@ def _transcribe_accurate(
             continue
 
         audio_array = _audio_segment_to_numpy(chunk)
-        fw_segments, _ = model.transcribe(audio_array, language="en")
+        fw_segments, _ = model.transcribe(audio_array, language=settings.whisper_language)
         text = " ".join(s.text.strip() for s in fw_segments).strip()
 
         transcribed.append({
@@ -135,7 +163,7 @@ def _transcribe_fast(
     Much faster than accurate mode for typical recordings.
     """
     audio_array = _audio_segment_to_numpy(audio)
-    fw_segs_gen, _ = model.transcribe(audio_array, language="en", vad_filter=True)
+    fw_segs_gen, _ = model.transcribe(audio_array, language=settings.whisper_language, vad_filter=True)
     fw_segs = list(fw_segs_gen)  # consume generator before alignment
     return _assign_speakers(fw_segs, segments)
 
@@ -171,6 +199,7 @@ def run(
     global _active_model
     model = WhisperModel(model_name, device=device, compute_type=compute_type)
     _active_model = model  # prevent GC / CUDA teardown until process exit
+    segments = _merge_diarization_segments(segments)
     print(f"[Stage 3] Model loaded. Running in '{mode}' mode on {len(segments)} segment(s)...")
 
     audio = AudioSegment.from_wav(clean_wav_path)
