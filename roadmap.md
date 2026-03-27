@@ -39,25 +39,30 @@ Core pipeline functional end-to-end, validated on a real M4A call recording with
 
 ---
 
-## v0.3 — next
+## v0.3 — in progress
 
-### Stage 5 — Analysis Report (Claude API)
+Priority order: Stage 5 (Claude report) → large file support → UI wrapper.
 
-The primary next major feature. After the transcript is produced:
+### Stage 5 — Analysis Report (Claude API) ← in progress
 
-- [ ] Send the structured JSON transcript to the Claude API
-- [ ] Prompt varies by `context` tag:
-  - `friend` — emotional tone, recurring themes, mood
-  - `work` — action items, decisions made, open questions
-  - `interview` — candidate strengths/weaknesses, follow-up questions
-  - `date` — compatibility signals, conversation balance, topics of interest
-- [ ] Output a Markdown report to `output/<name>_<timestamp>_report.md`
-- [ ] Add `--skip-analysis` flag to run pipeline without calling Claude API
+- [x] `--report` flag triggers Stage 5 after Stage 4
+- [x] Prompt loaded from `prompts/<context>.md` — user-editable per context
+- [x] Metadata header included: source file, context, speakers, audio duration
+- [x] Large transcripts chunked (~80k tokens each), partial reports synthesised
+- [x] Output: `output/<name>_<timestamp>_report.md`
+- [x] Terminal preview: first 20 lines of report printed after Stage 5
+- [x] `ANTHROPIC_API_KEY` validated early when `--report` is passed
+- [ ] **Real-world test** — run on an actual call recording with `--report`
 
 ### Large file support
 
 - [ ] **Audio chunking** for files >160 MB — split into overlapping chunks, transcribe independently, stitch with speaker continuity preserved
 - [ ] Progress reporting per chunk
+
+### UI wrapper
+
+- [ ] Local web UI (FastAPI + minimal HTML) so the pipeline can be triggered via a browser without using the terminal
+- [ ] File upload, progress display, download links for outputs
 
 ---
 
@@ -86,7 +91,6 @@ The primary next major feature. After the transcript is produced:
 
 ## Icebox (no timeline)
 
-- Web UI wrapper (Flask or FastAPI + simple HTML front-end)
 - Speaker identification (match `Speaker A` to a known voice profile)
 - Real-time streaming transcription
 - Cloud storage integration (S3/GCS for input/output)

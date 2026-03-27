@@ -106,6 +106,15 @@ class Settings:
                 "3. Add HUGGINGFACE_TOKEN=<your-token> to your .env file"
             )
 
+    def validate_for_report(self) -> None:
+        """Raise if the Anthropic API key is missing (required for Stage 5 report)."""
+        if not self.anthropic_api_key:
+            raise EnvironmentError(
+                "ANTHROPIC_API_KEY is not set in .env.\n"
+                "1. Get a key at https://console.anthropic.com/settings/keys\n"
+                "2. Add ANTHROPIC_API_KEY=<your-key> to your .env file"
+            )
+
 
 # Singleton — import this object throughout the pipeline
 settings = Settings()
