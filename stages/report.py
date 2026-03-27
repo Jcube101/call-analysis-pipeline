@@ -106,10 +106,10 @@ def _build_metadata_block(
     return "\n".join(lines)
 
 
-def _call_gemini(model, system_prompt: str, user_message: str) -> str:
+def _call_gemini(client, system_prompt: str, user_message: str) -> str:
     """Send one request to Gemini and return the response text."""
     full_prompt = f"{system_prompt}\n\n{user_message}"
-    response = model.generate_content(full_prompt)
+    response = client.models.generate_content(model=_MODEL, contents=full_prompt)
     return response.text
 
 
@@ -176,13 +176,12 @@ def run(
     """
     global _genai
     if _genai is None:
-        import google.generativeai as _genai_module
+        from google import genai as _genai_module
         _genai = _genai_module
 
     print(f"\n[Stage 5] Generating analysis report (context: {context}, model: {_MODEL})...")
 
-    _genai.configure(api_key=api_key)
-    model = _genai.GenerativeModel(_MODEL)
+    client = _genai.Client(api_key=api_key)
 
     instruction_prompt = _load_prompt(context, prompts_dir)
     metadata_block = _build_metadata_block(
@@ -199,7 +198,7 @@ def run(
             f"## Conversation metadata\n\n{metadata_block}\n\n"
             f"## Transcript\n\n{transcript_text}"
         )
-        report_body = _call_gemini(model, instruction_prompt, user_message)
+        report_body = _call_gemini(client, instruction_prompt, user_message)
     else:
         print(f"[Stage 5] Transcript is large — splitting into {n_chunks} chunks...")
         partial_reports: list[str] = []
@@ -210,7 +209,7 @@ def run(
                 f"## Conversation metadata\n\n{metadata_block}\n\n"
                 f"## Transcript (part {i} of {n_chunks})\n\n{chunk}"
             )
-            partial = _call_gemini(model, instruction_prompt, user_message)
+            partial = _call_gemini(client, instruction_prompt, user_message)
             partial_reports.append(f"### Part {i} of {n_chunks}\n\n{partial}")
 
         print(f"[Stage 5] Synthesising {n_chunks} partial reports...")
@@ -221,7 +220,7 @@ def run(
             "Maintain the analytical focus from the original instruction."
         )
         combined_partials = "\n\n---\n\n".join(partial_reports)
-        report_body = _call_gemini(model, synthesis_prompt, combined_partials)
+        report_body = _call_gemini(client, synthesis_prompt, combined_partials)
 
     # Build the full report with a header
     processed_at = datetime.now().isoformat(timespec="seconds")
