@@ -19,11 +19,16 @@ Future: auto-generate an analysis report via the Claude API (not yet implemented
 
 ```bash
 python main.py --input input/call.mp3
-# Optional overrides:
+# Common overrides:
 python main.py --input input/call.mp3 --context work --num-speakers 3
+python main.py --input input/call.mp3 --transcription-mode fast
+python main.py --input input/call.mp3 --language fr
+# Utility flags:
+python main.py --input input/call.mp3 --dry-run
+python main.py --input output/call_clean.wav --skip-preprocess
 ```
 
-All config (tokens, context, speaker count) lives in `.env`. See `.env.example`.
+All config (tokens, context, speaker count, transcription mode, language) lives in `.env`. See `.env.example`.
 
 ## Project layout
 
@@ -46,6 +51,7 @@ output/          — pipeline outputs land here (gitignored, must exist locally)
 - **Segment dicts** are the internal data structure passed between stages. Each is a dict with keys `start`, `end`, `speaker`, `label` (and `text` after Stage 3).
 - **Windows compatibility** — avoid Unix-only shell commands or hardcoded `/` paths; use `os.path` instead.
 - **No chunking yet** — large file support is deferred, but don't architect it out. Keep it in mind when touching Stage 1 or 3.
+- **Error handling** — each stage call in `main.py` is wrapped in try/except. Failures print `[error] Stage N (name) failed: <message>` and exit with code 1.
 
 ## pyannote API compatibility (important)
 
@@ -82,6 +88,8 @@ This avoids a dependency on `torchcodec` (which is not installed). A `UserWarnin
 | `CONVERSATION_CONTEXT` | No | `friend` / `work` / `interview` / `date` (default: `friend`) |
 | `NUM_SPEAKERS` | No | Integer or blank for auto-detect (default: auto) |
 | `WHISPER_MODEL` | No | `tiny` / `base` / `small` / `medium` / `large` (default: `medium`) |
+| `TRANSCRIPTION_MODE` | No | `accurate` / `fast` (default: `accurate`) |
+| `WHISPER_LANGUAGE` | No | BCP-47 language code, e.g. `en`, `fr`, `es` (default: `en`) |
 
 ## Dependencies and install order
 
@@ -109,4 +117,4 @@ pip install -r requirements.txt
 
 ## What NOT to commit
 
-`.env`, `input/`, `output/`, `venv/`, `whisper_models/`, `*.mp3`, `*.wav`, `*.m4a` — all covered by `.gitignore`.
+`.env`, `input/`, `output/`, `venv/`, `whisper_models/`, `*.mp3`, `*.wav`, `*.m4a`, `*.mpeg` — all covered by `.gitignore`.

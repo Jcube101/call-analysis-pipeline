@@ -21,23 +21,23 @@ The core pipeline is functional end-to-end and has been validated on a real M4A 
 
 ---
 
-## Near-term — v0.2
+## v0.2 — complete
 
-### Must-have
+- [x] **Error handling pass** — each stage wrapped in try/except with clear `[error] Stage N` messages; exits with code 1 on failure
+- [x] **Language config** — `WHISPER_LANGUAGE` env var + `--language` CLI flag; passed to both transcription modes
+- [x] **Transcription modes** — `accurate` (default, per-segment) and `fast` (whole-file, ~20% faster but coarser output); `TRANSCRIPTION_MODE` env var + `--transcription-mode` CLI flag
+- [x] **Dry-run mode** — `--dry-run` validates config and input file without running any stage
+- [x] **Stage skipping** — `--skip-preprocess` passes a pre-cleaned WAV directly to Stage 2
+- [x] **Progress summary** — completion banner shows segment count, speaker breakdown, audio duration, total elapsed, and per-stage timing
+- [x] **Validated on longer recordings** — tested on 10:56 MPEG file (134 segments, 2 speakers); ~1x real-time on GTX 1650 in accurate mode
 
-- [ ] **Error handling pass** — wrap each stage in try/except with clear failure messages; partial outputs should not silently corrupt the JSON
-- [ ] **Segment merging** — consecutive segments from the same speaker (< N ms apart) should be merged before transcription to reduce Whisper calls and improve context
-- [ ] **Language config** — make Whisper `language` param configurable via `.env` (`WHISPER_LANGUAGE`, default `en`)
+### Known limitation: fast mode
 
-### Nice-to-have
-
-- [ ] **Dry-run mode** — `--dry-run` flag that validates config and input file without running the pipeline
-- [ ] **Stage skipping** — `--skip-preprocess` flag to pass a pre-cleaned WAV directly to Stage 2
-- [ ] **Progress summary** — print a clean summary table at the end (duration, segment count, speaker breakdown, elapsed time)
+`fast` mode transcribes the full file in one Whisper call. Whisper internally processes in ~30s chunks, producing ~4 segments for a 2-minute file and ~49 for an 11-minute file — significantly fewer lines than `accurate` mode. Kept for cases where coarse output is acceptable. A smarter fast mode (e.g. per-merged-turn transcription) is a future improvement.
 
 ---
 
-## Medium-term — v0.3
+## v0.3 — next
 
 ### Stage 5 — Analysis Report (Claude API)
 
@@ -59,14 +59,14 @@ The primary next major feature. After the transcript is produced:
 
 ---
 
-## Longer-term — v1.0
+## v1.0 — longer-term
 
 ### Quality improvements
 
 - [ ] **Speaker name mapping** — `--speaker-names "Alice,Bob"` to replace generic labels
 - [ ] **Whisper word-level timestamps** — `word_timestamps=True` for finer-grained JSON
 - [ ] **Confidence scores** — include Whisper segment-level log-probability in JSON
-- [ ] **Multi-language** — detect language per segment or accept `--language` override
+- [ ] **Smarter fast mode** — merge same-speaker diarization turns, transcribe per turn; fewer Whisper calls than accurate, better granularity than current fast
 
 ### Usability
 
