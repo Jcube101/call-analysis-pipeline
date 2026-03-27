@@ -8,6 +8,7 @@ Usage:
     python main.py --input input/call.mp3 --language fr
     python main.py --input input/call.mp3 --dry-run
     python main.py --input input/call_clean.wav --skip-preprocess
+    python main.py --input input/call.mp3 --report
 """
 
 import argparse
@@ -18,7 +19,7 @@ import time
 from collections import Counter
 
 from config import settings
-from stages import preprocess, diarize, transcribe, export
+from stages import preprocess, diarize, transcribe, export, report
 
 
 def _check_ffmpeg() -> None:
@@ -121,6 +122,13 @@ def _parse_args() -> argparse.Namespace:
         dest="skip_preprocess",
         help="Skip Stage 1 — input must already be a clean 16 kHz mono WAV",
     )
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        default=False,
+        dest="report",
+        help="Run Stage 5: generate an analysis report via the Gemini API (requires GEMINI_API_KEY)",
+    )
     return parser.parse_args()
 
 
@@ -160,10 +168,19 @@ def main() -> None:
     print(f"  Language: {settings.whisper_language}")
     if args.skip_preprocess:
         print(f"  Stage 1:  SKIPPED (using input as clean WAV)")
+    if args.report:
+        print(f"  Report:   ON (Stage 5 will run after transcription)")
     if args.dry_run:
         print(f"  Mode:     DRY RUN")
     _print_device_info()
     print("=" * 60)
+
+    if args.report:
+        try:
+            settings.validate_for_report()
+        except EnvironmentError as e:
+            print(f"\n[error] {e}")
+            sys.exit(1)
 
     if args.dry_run:
         print("\n[dry-run] Config and input file are valid. No stages executed.")
@@ -233,8 +250,8 @@ def main() -> None:
         sys.exit(1)
     stage_times["Stage 4"] = time.time() - t
 
-    # --- Summary ---
-    total_elapsed = time.time() - total_start
+    # Compute speaker stats now — needed by both summary and Stage 5
+    speaker_counts = Counter(s["speaker"] for s in transcribed_segments)
 
     try:
         from pydub import AudioSegment as _AS
@@ -242,7 +259,39 @@ def main() -> None:
     except Exception:
         audio_duration = None
 
-    speaker_counts = Counter(s["speaker"] for s in transcribed_segments)
+    # --- Stage 5: Report (optional) ---
+    report_path = None
+    if args.report:
+        t = time.time()
+        try:
+            report_path = report.run(
+                segments=transcribed_segments,
+                source_file=args.input,
+                output_dir=output_dir,
+                context=settings.context,
+                num_speakers=len(speaker_counts),
+                audio_duration=audio_duration,
+                speaker_counts=dict(speaker_counts),
+                api_key=settings.gemini_api_key,
+                prompts_dir="prompts",
+            )
+        except Exception as e:
+            print(f"\n[error] Stage 5 (report) failed: {e}")
+            sys.exit(1)
+        stage_times["Stage 5"] = time.time() - t
+
+        # Print first ~20 lines of the report body as a terminal summary
+        print("\n--- Report preview ---")
+        with open(report_path, encoding="utf-8") as f:
+            preview_lines = f.readlines()
+        print("".join(preview_lines[:20]).rstrip())
+        if len(preview_lines) > 20:
+            print(f"  ... ({len(preview_lines) - 20} more lines in {report_path})")
+        print("----------------------")
+
+    # --- Summary ---
+    total_elapsed = time.time() - total_start
+
     speaker_breakdown = "  ".join(
         f"{spk}: {cnt}" for spk, cnt in sorted(speaker_counts.items())
     )
@@ -255,6 +304,8 @@ def main() -> None:
     print(f"  Clean audio:  {clean_wav}")
     print(f"  Transcript:   {txt_path}")
     print(f"  JSON:         {json_path}")
+    if report_path:
+        print(f"  Report:       {report_path}")
     print(f"  Segments:     {len(transcribed_segments)}  |  Speakers: {len(speaker_counts)}  ({speaker_breakdown})")
     if audio_duration is not None:
         print(f"  Audio:        {_fmt_duration(audio_duration)}  |  Elapsed: {_fmt_duration(total_elapsed)}  ({timing_breakdown})")

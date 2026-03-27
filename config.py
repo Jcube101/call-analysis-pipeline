@@ -20,7 +20,7 @@ VALID_TRANSCRIPTION_MODES = {"fast", "accurate"}
 class Settings:
     # Secrets
     huggingface_token: str = field(default_factory=lambda: os.getenv("HUGGINGFACE_TOKEN", ""))
-    anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
+    gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
 
     # Conversation metadata
     context: str = field(default_factory=lambda: os.getenv("CONVERSATION_CONTEXT", "friend"))
@@ -104,6 +104,15 @@ class Settings:
                 "2. Accept the model license at "
                 "https://huggingface.co/pyannote/speaker-diarization-3.1\n"
                 "3. Add HUGGINGFACE_TOKEN=<your-token> to your .env file"
+            )
+
+    def validate_for_report(self) -> None:
+        """Raise if the Gemini API key is missing (required for Stage 5 report)."""
+        if not self.gemini_api_key:
+            raise EnvironmentError(
+                "GEMINI_API_KEY is not set in .env.\n"
+                "1. Get a key at https://aistudio.google.com/app/apikey\n"
+                "2. Add GEMINI_API_KEY=<your-key> to your .env file"
             )
 
 
