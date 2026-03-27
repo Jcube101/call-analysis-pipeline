@@ -41,18 +41,18 @@ Core pipeline functional end-to-end, validated on a real M4A call recording with
 
 ## v0.3 — in progress
 
-Priority order: Stage 5 (Claude report) → large file support → UI wrapper.
+Priority order: Stage 5 (Gemini report) ✓ → large file support → UI wrapper.
 
-### Stage 5 — Analysis Report (Claude API) ← in progress
+### Stage 5 — Analysis Report (Gemini API) — complete
 
 - [x] `--report` flag triggers Stage 5 after Stage 4
 - [x] Prompt loaded from `prompts/<context>.md` — user-editable per context
 - [x] Metadata header included: source file, context, speakers, audio duration
-- [x] Large transcripts chunked (~80k tokens each), partial reports synthesised
+- [x] Large transcripts chunked (~500k chars each), partial reports synthesised
 - [x] Output: `output/<name>_<timestamp>_report.md`
 - [x] Terminal preview: first 20 lines of report printed after Stage 5
-- [x] `ANTHROPIC_API_KEY` validated early when `--report` is passed
-- [ ] **Real-world test** — run on an actual call recording with `--report`
+- [x] `GEMINI_API_KEY` validated early when `--report` is passed
+- [x] **Real-world test** — validated on First_Test_File (work context) with `gemini-3-flash-preview`
 
 ### Large file support
 

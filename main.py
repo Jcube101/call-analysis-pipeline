@@ -127,7 +127,7 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         dest="report",
-        help="Run Stage 5: generate an analysis report via the Claude API (requires ANTHROPIC_API_KEY)",
+        help="Run Stage 5: generate an analysis report via the Gemini API (requires GEMINI_API_KEY)",
     )
     return parser.parse_args()
 
