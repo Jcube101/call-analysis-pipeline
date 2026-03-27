@@ -164,3 +164,39 @@ else:
 waveform = torch.from_numpy(data).float()
 ```
 pyannote expects `(channels, time)` — opposite of numpy's default `(time, channels)`.
+
+---
+
+## 12. Pre-transcription diarization segment merging collapses transcript output
+
+**Problem:** Adding a merge step that combined consecutive same-speaker diarization segments (with a gap threshold) reduced a 20+ line transcript to 2 lines.
+
+**Root cause:** pyannote commonly splits a single speaking turn into many segments with tiny gaps (<100ms) between them. Any gap threshold — even 0.1s — merges these into one giant segment per speaker, collapsing the entire conversation into one block per speaker.
+
+**Fix:** Do not pre-merge diarization segments before transcription. The post-transcription merge in `_assign_speakers()` (which merges consecutive same-speaker *Whisper* output segments) is the correct place to merge, and it works correctly.
+
+**Lesson:** Merging should happen on Whisper output (sentence-level), not on diarization input (which has no meaningful minimum gap).
+
+---
+
+## 13. vad_filter=True causes Whisper to produce too few segments
+
+**Problem:** Using `vad_filter=True` in `model.transcribe()` for whole-file fast mode transcription produced only 4 Whisper segments for a 2-minute file, resulting in 2 output lines.
+
+**Root cause:** faster-whisper's VAD filter groups audio into large speech chunks before transcribing. This is designed to skip silence, but it also collapses the audio into very few large chunks.
+
+**Fix:** Remove `vad_filter=True`. Without it, Whisper segments at natural speech boundaries and produces more granular output.
+
+**Diagnosis method:** Added a debug print showing `whisper segments: X → assigned: Y → after merge: Z`. The X=4 immediately identified that Whisper itself was only producing 4 segments, pointing to the transcription call rather than the alignment logic.
+
+---
+
+## 14. Fast mode is fundamentally coarser than accurate mode
+
+**Observation:** For a 10:56 file, fast mode produced 49 segments vs accurate mode's 134, and was only ~20% faster (480s vs 624s on GTX 1650).
+
+**Root cause:** Whisper processes audio in ~30s internal chunks regardless of mode. One whole-file call → ~22 chunks → ~49 segments. Per-segment accurate mode → one call per diarization turn → 134 finer-grained segments.
+
+**Conclusion:** The time saving from eliminating per-call overhead is modest (~20%) while the quality loss is significant. `accurate` is the correct default. `fast` is only worth using when coarse output is explicitly acceptable.
+
+**Future improvement:** A smarter fast mode would merge same-speaker diarization *turns* (not micro-segments) and transcribe per turn — fewer calls than accurate, better granularity than current fast.

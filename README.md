@@ -2,7 +2,7 @@
 
 A Python pipeline that takes a recorded conversation and produces a clean, speaker-diarized, timestamped transcript ready for post-analysis. Runs fully locally with GPU acceleration.
 
-**Status: v0.1 — fully functional and tested end-to-end (GPU, Windows 11, GTX 1650).**
+**Status: v0.2 — fully functional and tested end-to-end (GPU, Windows 11, GTX 1650).**
 
 ## What it does
 
@@ -10,7 +10,7 @@ A Python pipeline that takes a recorded conversation and produces a clean, speak
 |-------|-------------|
 | 1 — Preprocess | Noise reduction + volume normalization via `noisereduce` and `pydub` |
 | 2 — Diarize | Speaker separation using `pyannote/speaker-diarization-3.1`; per-speaker loudness normalization |
-| 3 — Transcribe | Per-segment transcription with faster-whisper (local, GPU-accelerated) |
+| 3 — Transcribe | Transcription with faster-whisper (local, GPU-accelerated); two modes: `accurate` (default) and `fast` |
 | 4 — Export | Structured `.txt` and `.json` output with metadata header, uniquely named per run |
 
 Future stage (not yet implemented): auto-generated analysis report via the Claude API.
@@ -111,6 +111,8 @@ Edit `.env` and fill in:
 - `ANTHROPIC_API_KEY` — reserved for future use
 - `CONVERSATION_CONTEXT` — `friend`, `work`, `interview`, or `date`
 - `NUM_SPEAKERS` — integer (e.g. `2`) or leave blank for auto-detection
+- `TRANSCRIPTION_MODE` — `accurate` (default) or `fast`
+- `WHISPER_LANGUAGE` — BCP-47 language code, e.g. `en`, `fr`, `es` (default: `en`)
 
 ### Create local directories
 
@@ -120,7 +122,7 @@ mkdir input output
 
 ## Running the pipeline
 
-Supports MP3, M4A, WAV, and any ffmpeg-supported format:
+Supports MP3, M4A, WAV, MPEG, and any ffmpeg-supported format:
 
 ```bash
 python main.py --input input/your_recording.m4a
@@ -129,10 +131,23 @@ python main.py --input input/your_recording.m4a
 Optional overrides:
 
 ```bash
+# Override context and speaker count
 python main.py --input input/call.mp3 --context work --num-speakers 3
+
+# Use fast transcription mode (coarser output, ~20% faster)
+python main.py --input input/call.mp3 --transcription-mode fast
+
+# Transcribe a non-English recording
+python main.py --input input/call.mp3 --language fr
+
+# Validate config and input without running the pipeline
+python main.py --input input/call.mp3 --dry-run
+
+# Skip noise reduction (re-run diarization+transcription on an already-cleaned WAV)
+python main.py --input output/call_clean.wav --skip-preprocess
 ```
 
-The startup banner shows which device each stage will use:
+The startup banner shows settings and device info:
 ```
 ============================================================
   Call Analysis Pipeline
@@ -140,11 +155,34 @@ The startup banner shows which device each stage will use:
   Context:  friend
   Speakers: 2
   Whisper:  medium
+  Tx Mode:  accurate
+  Language: en
   CUDA:         available (NVIDIA GeForce GTX 1650)
   Diarization:  GPU (pyannote → CUDA)
   Transcription: GPU (faster-whisper int8_float16)
 ============================================================
 ```
+
+The completion banner shows a full run summary:
+```
+============================================================
+  Pipeline complete!
+  Clean audio:  output/call_clean.wav
+  Transcript:   output/call_20260327_143022.txt
+  JSON:         output/call_20260327_143022.json
+  Segments:     134  |  Speakers: 2  (Speaker A: 77  Speaker B: 57)
+  Audio:        10:56  |  Elapsed: 11:27  (Stage 1: 7.5s  Stage 2: 56.3s  Stage 3: 623.8s  Stage 4: 0.0s)
+============================================================
+```
+
+### Transcription modes
+
+| Mode | How it works | Speed | Output quality |
+|------|-------------|-------|----------------|
+| `accurate` (default) | One Whisper call per diarization segment | ~1x real-time on GTX 1650 | Fine-grained, sentence-level lines |
+| `fast` | One Whisper call for the full file | ~20% faster | Coarser — ~1 line per 30s chunk |
+
+For most use cases `accurate` is the right choice. `fast` is available for quick previews where exact line count doesn't matter.
 
 ### First-run note
 

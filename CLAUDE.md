@@ -4,7 +4,7 @@ This file gives Claude context about the call-analysis-pipeline project so it ca
 
 ## What this project does
 
-Takes an audio recording of a conversation (MP3, M4A, WAV, or any ffmpeg-supported format) and outputs:
+Takes an audio recording of a conversation (MP3, M4A, WAV, MPEG, or any ffmpeg-supported format) and outputs:
 1. A noise-reduced WAV (`output/*_clean.wav`)
 2. A speaker-diarized, timestamped transcript (`output/<name>_<timestamp>.txt`)
 3. A structured JSON file ready for downstream analysis (`output/<name>_<timestamp>.json`)
@@ -13,17 +13,22 @@ Future: auto-generate an analysis report via the Claude API (not yet implemented
 
 ## Status
 
-**v0.1 is fully functional and tested end-to-end with GPU acceleration** on a real M4A call recording (GTX 1650, CUDA 12.1, Windows 11, Python 3.11).
+**v0.2 is fully functional and tested end-to-end with GPU acceleration** on real call recordings (GTX 1650, CUDA 12.1, Windows 11, Python 3.11). Tested on files up to 10:56 in length.
 
 ## How to run
 
 ```bash
 python main.py --input input/call.mp3
-# Optional overrides:
+# Common overrides:
 python main.py --input input/call.mp3 --context work --num-speakers 3
+python main.py --input input/call.mp3 --transcription-mode fast
+python main.py --input input/call.mp3 --language fr
+# Utility flags:
+python main.py --input input/call.mp3 --dry-run
+python main.py --input output/call_clean.wav --skip-preprocess
 ```
 
-All config (tokens, context, speaker count) lives in `.env`. See `.env.example`.
+All config (tokens, context, speaker count, transcription mode, language) lives in `.env`. See `.env.example`.
 
 ## Project layout
 
@@ -46,6 +51,7 @@ output/          — pipeline outputs land here (gitignored, must exist locally)
 - **Segment dicts** are the internal data structure passed between stages. Each is a dict with keys `start`, `end`, `speaker`, `label` (and `text` after Stage 3).
 - **Windows compatibility** — avoid Unix-only shell commands or hardcoded `/` paths; use `os.path` instead.
 - **No chunking yet** — large file support is deferred, but don't architect it out. Keep it in mind when touching Stage 1 or 3.
+- **Error handling** — each stage call in `main.py` is wrapped in try/except. Failures print `[error] Stage N (name) failed: <message>` and exit with code 1.
 
 ## Output filenames
 
@@ -64,6 +70,15 @@ Transcription uses **faster-whisper** (CTranslate2-based) instead of openai-whis
 - On CPU: `device="cpu", compute_type="int8"`
 
 **ctranslate2 CUDA teardown bug (Windows):** ctranslate2's `__del__` calls `exit()` when the WhisperModel is garbage-collected mid-process on Windows. Fixed by holding a module-level reference (`_active_model`) so cleanup is deferred to process exit. Do not add `del model` inside `transcribe.run()`.
+
+## Transcription modes
+
+Two modes selectable via `TRANSCRIPTION_MODE` env var or `--transcription-mode` CLI flag:
+
+- **accurate** (default): one `model.transcribe()` call per diarization segment. Produces fine-grained sentence-level output. ~1x real-time on GTX 1650.
+- **fast**: one `model.transcribe()` call on the full WAV, then speaker assignment via max-overlap with diarization windows. ~20% faster but produces far fewer lines — Whisper's internal ~30s chunking limits granularity to ~4 segments for a 2-min file. Only use when coarse output is acceptable.
+
+**Do not** pre-merge diarization segments before transcription. pyannote commonly outputs many same-speaker segments with tiny gaps (<100ms) between them — any gap threshold collapses entire speaking turns into one line.
 
 ## pyannote API compatibility
 
@@ -96,6 +111,8 @@ The `torchcodec` UserWarning on import is suppressed since it is irrelevant to t
 | `CONVERSATION_CONTEXT` | No | `friend` / `work` / `interview` / `date` (default: `friend`) |
 | `NUM_SPEAKERS` | No | Integer or blank for auto-detect (default: auto) |
 | `WHISPER_MODEL` | No | `tiny` / `base` / `small` / `medium` / `large` (default: `medium`) |
+| `TRANSCRIPTION_MODE` | No | `accurate` / `fast` (default: `accurate`) |
+| `WHISPER_LANGUAGE` | No | BCP-47 language code, e.g. `en`, `fr`, `es` (default: `en`) |
 
 ## Dependencies and install order
 
@@ -117,4 +134,4 @@ Key version constraints (all in `requirements.txt`):
 
 ## What NOT to commit
 
-`.env`, `input/`, `output/`, `venv/`, `whisper_models/`, `*.mp3`, `*.wav`, `*.m4a` — all covered by `.gitignore`.
+`.env`, `input/`, `output/`, `venv/`, `whisper_models/`, `*.mp3`, `*.wav`, `*.m4a`, `*.mpeg` — all covered by `.gitignore`.

@@ -12,10 +12,14 @@ A local Python pipeline that processes a recorded voice call and produces a clea
 
 | Parameter | Source | Description |
 |-----------|--------|-------------|
-| `--input FILE` | CLI arg | Path to source audio file (MP3, M4A, WAV, or any ffmpeg-supported format) |
+| `--input FILE` | CLI arg | Path to source audio file (MP3, M4A, WAV, MPEG, or any ffmpeg-supported format) |
 | `--context CTX` | CLI / `.env` | Conversation type: `friend`, `work`, `interview`, `date` |
 | `--num-speakers N` | CLI / `.env` | Integer speaker count, or omit for auto-detection |
 | `--whisper-model SIZE` | CLI / `.env` | Whisper model size: `tiny`, `base`, `small`, `medium` (default), `large` |
+| `--transcription-mode MODE` | CLI / `.env` | `accurate` (default) or `fast` |
+| `--language LANG` | CLI / `.env` | BCP-47 language code, e.g. `en`, `fr`, `es` (default: `en`) |
+| `--dry-run` | CLI flag | Validate config and input without running any stage |
+| `--skip-preprocess` | CLI flag | Skip Stage 1; `--input` must be a clean 16 kHz mono WAV |
 
 CLI flags override `.env` values when both are present.
 
@@ -75,13 +79,15 @@ All outputs land in `output/`. Each run produces uniquely named transcript files
 
 | Step | Implementation |
 |------|---------------|
-| Load audio | `pydub.AudioSegment.from_file()` — supports any ffmpeg format including M4A |
+| Load audio | `pydub.AudioSegment.from_file()` — supports any ffmpeg format |
 | Standardise | Convert to mono, 16 kHz |
 | Noise reduction | `noisereduce.reduce_noise()` — spectral subtraction using first 0.5 s as noise profile; `stationary=False`, `prop_decrease=0.75` |
 | Loudness normalization | `pydub.effects.normalize()` |
 | Export | WAV, written to `output/` |
 
 **Output:** `output/<name>_clean.wav`
+
+Can be skipped with `--skip-preprocess` when a clean WAV already exists.
 
 ---
 
@@ -115,15 +121,24 @@ All outputs land in `output/`. Each run produces uniquely named transcript files
 
 **Goal:** Add text to each diarized segment using faster-whisper (CTranslate2-based).
 
+Two modes controlled by `TRANSCRIPTION_MODE` / `--transcription-mode`:
+
+#### accurate (default)
+
 | Step | Implementation |
 |------|---------------|
-| Model | faster-whisper (`WhisperModel`) — local, offline after first download |
+| Model | `WhisperModel` — local, offline after first download |
 | GPU mode | `device="cuda", compute_type="int8_float16"` — fits in 4 GB VRAM |
 | CPU fallback | `device="cpu", compute_type="int8"` |
-| Input | Per-segment audio slices from Stage 1 clean WAV, converted to float32 numpy arrays |
-| Language | English (`language="en"`) — hardcoded for now |
+| Per-segment | One `model.transcribe()` call per diarization segment |
 | Short segment filter | Segments < 500 ms are skipped (prevents hallucinations) |
-| Output | `(segments_generator, info)` — generator consumed and joined per segment |
+| Language | Configurable via `WHISPER_LANGUAGE` (default: `en`) |
+
+Produces fine-grained sentence-level output. ~1x real-time on GTX 1650 for a 10-minute file.
+
+#### fast
+
+Same model and device setup, but transcribes the entire WAV in one call, then assigns each Whisper segment to a speaker via max-overlap with diarization windows. Consecutive same-speaker Whisper segments are merged. ~20% faster than accurate for long files, but produces fewer output lines (Whisper's ~30s internal chunking limits granularity).
 
 **CUDA teardown fix:** A module-level `_active_model` reference keeps the `WhisperModel` alive until process exit. Without it, ctranslate2's `__del__` calls `exit()` when the model is garbage-collected mid-process on Windows.
 
@@ -146,13 +161,37 @@ All outputs land in `output/`. Each run produces uniquely named transcript files
 
 ## Configuration (`config.py`)
 
-| Setting | Env var | Type | Default |
-|---------|---------|------|---------|
-| `huggingface_token` | `HUGGINGFACE_TOKEN` | str | `""` |
-| `anthropic_api_key` | `ANTHROPIC_API_KEY` | str | `""` |
-| `context` | `CONVERSATION_CONTEXT` | str | `"friend"` |
-| `num_speakers` | `NUM_SPEAKERS` | int \| None | `None` |
-| `whisper_model` | `WHISPER_MODEL` | str | `"medium"` |
+| Setting | Env var | CLI flag | Default |
+|---------|---------|----------|---------|
+| `huggingface_token` | `HUGGINGFACE_TOKEN` | — | `""` |
+| `anthropic_api_key` | `ANTHROPIC_API_KEY` | — | `""` |
+| `context` | `CONVERSATION_CONTEXT` | `--context` | `"friend"` |
+| `num_speakers` | `NUM_SPEAKERS` | `--num-speakers` | `None` (auto) |
+| `whisper_model` | `WHISPER_MODEL` | `--whisper-model` | `"medium"` |
+| `transcription_mode` | `TRANSCRIPTION_MODE` | `--transcription-mode` | `"accurate"` |
+| `whisper_language` | `WHISPER_LANGUAGE` | `--language` | `"en"` |
+
+---
+
+## Error handling
+
+Each stage is wrapped in `try/except` in `main.py`. On failure:
+- Prints `[error] Stage N (name) failed: <message>`
+- Exits with code 1
+- Stage 2 `EnvironmentError` (missing token) is caught separately with a more specific message
+
+`--dry-run` exits cleanly after config validation without executing any stage.
+
+---
+
+## Performance (GTX 1650, accurate mode)
+
+| Audio length | Stage 2 | Stage 3 | Total |
+|-------------|---------|---------|-------|
+| 2:01 | ~82s | ~76s | ~2:41 |
+| 10:56 | ~56s | ~624s | ~11:27 |
+
+Stage 2 scales sublinearly (pyannote batches better on longer audio). Stage 3 scales linearly with segment count (~4.7s/segment on GTX 1650). Overall ratio is ~1x real-time for longer files.
 
 ---
 
@@ -200,7 +239,6 @@ pip install -r requirements.txt
 ## Deferred / out of scope (current version)
 
 - Large file chunking (>160 MB)
-- Multi-language support — Whisper `language` hardcoded to `"en"`
 - Report generation via Claude API — `ANTHROPIC_API_KEY` reserved for future Stage 5
 - Real-time / streaming processing
 - Web UI or REST API wrapper
