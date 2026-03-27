@@ -33,7 +33,7 @@ class Settings:
 
     # Transcription mode — "fast" (one pass, speaker alignment) or "accurate" (per-segment)
     transcription_mode: str = field(
-        default_factory=lambda: os.getenv("TRANSCRIPTION_MODE", "fast")
+        default_factory=lambda: os.getenv("TRANSCRIPTION_MODE", "accurate")
     )
 
     # Whisper language — BCP-47 code passed to faster-whisper (e.g. "en", "fr", "es")
