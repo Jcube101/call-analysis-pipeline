@@ -1,8 +1,8 @@
 # Call Analysis Pipeline
 
-A Python pipeline that takes a recorded conversation and produces a clean, speaker-diarized, timestamped transcript ready for post-analysis. Runs fully locally with GPU acceleration.
+A Python pipeline that takes a recorded conversation and produces a clean, speaker-diarized, timestamped transcript and an AI-generated analysis report. Runs fully locally with GPU acceleration (report generation uses the Gemini API).
 
-**Status: v0.2 — fully functional and tested end-to-end (GPU, Windows 11, GTX 1650).**
+**Status: v0.3 — fully functional and tested end-to-end (GPU, Windows 11, GTX 1650).**
 
 ## What it does
 
@@ -12,17 +12,17 @@ A Python pipeline that takes a recorded conversation and produces a clean, speak
 | 2 — Diarize | Speaker separation using `pyannote/speaker-diarization-3.1`; per-speaker loudness normalization |
 | 3 — Transcribe | Transcription with faster-whisper (local, GPU-accelerated); two modes: `accurate` (default) and `fast` |
 | 4 — Export | Structured `.txt` and `.json` output with metadata header, uniquely named per run |
-
-Future stage (not yet implemented): auto-generated analysis report via the Claude API.
+| 5 — Report | AI-generated analysis report via Gemini API; triggered with `--report` |
 
 ## Output
 
 Each run produces uniquely named files — no overwrites:
 ```
 output/
-├── First_Test_File_20260327_143022.txt   # Human-readable labeled transcript
-├── First_Test_File_20260327_143022.json  # Structured JSON for downstream analysis
-└── First_Test_File_clean.wav             # Noise-reduced audio (overwritten each run)
+├── First_Test_File_20260327_143022.txt          # Human-readable labeled transcript
+├── First_Test_File_20260327_143022.json         # Structured JSON for downstream analysis
+├── First_Test_File_20260327_143022_report.md    # AI analysis report (--report only)
+└── First_Test_File_clean.wav                    # Noise-reduced audio (overwritten each run)
 ```
 
 **transcript.txt** looks like:
@@ -108,7 +108,7 @@ cp .env.example .env
 Edit `.env` and fill in:
 
 - `HUGGINGFACE_TOKEN` — required for speaker diarization. Get a token at https://huggingface.co/settings/tokens, then accept the model license at https://huggingface.co/pyannote/speaker-diarization-3.1
-- `ANTHROPIC_API_KEY` — reserved for future use
+- `GEMINI_API_KEY` — required for `--report`. Get a free key at https://aistudio.google.com/app/apikey
 - `CONVERSATION_CONTEXT` — `friend`, `work`, `interview`, or `date`
 - `NUM_SPEAKERS` — integer (e.g. `2`) or leave blank for auto-detection
 - `TRANSCRIPTION_MODE` — `accurate` (default) or `fast`
@@ -134,6 +134,9 @@ Optional overrides:
 # Override context and speaker count
 python main.py --input input/call.mp3 --context work --num-speakers 3
 
+# Generate an AI analysis report after transcription
+python main.py --input input/call.mp3 --context work --report
+
 # Use fast transcription mode (coarser output, ~20% faster)
 python main.py --input input/call.mp3 --transcription-mode fast
 
@@ -143,8 +146,11 @@ python main.py --input input/call.mp3 --language fr
 # Validate config and input without running the pipeline
 python main.py --input input/call.mp3 --dry-run
 
-# Skip noise reduction (re-run diarization+transcription on an already-cleaned WAV)
+# Skip noise reduction (re-run on an already-cleaned WAV)
 python main.py --input output/call_clean.wav --skip-preprocess
+
+# Skip preprocessing and generate report only (transcript already exists)
+python main.py --input output/call_clean.wav --context work --report --skip-preprocess
 ```
 
 The startup banner shows settings and device info:
@@ -152,11 +158,12 @@ The startup banner shows settings and device info:
 ============================================================
   Call Analysis Pipeline
   Input:    input/call.m4a
-  Context:  friend
+  Context:  work
   Speakers: 2
   Whisper:  medium
   Tx Mode:  accurate
   Language: en
+  Report:   ON (Stage 5 will run after transcription)
   CUDA:         available (NVIDIA GeForce GTX 1650)
   Diarization:  GPU (pyannote → CUDA)
   Transcription: GPU (faster-whisper int8_float16)
@@ -170,8 +177,9 @@ The completion banner shows a full run summary:
   Clean audio:  output/call_clean.wav
   Transcript:   output/call_20260327_143022.txt
   JSON:         output/call_20260327_143022.json
+  Report:       output/call_20260327_143022_report.md
   Segments:     134  |  Speakers: 2  (Speaker A: 77  Speaker B: 57)
-  Audio:        10:56  |  Elapsed: 11:27  (Stage 1: 7.5s  Stage 2: 56.3s  Stage 3: 623.8s  Stage 4: 0.0s)
+  Audio:        10:56  |  Elapsed: 11:32  (Stage 1: 7.5s  Stage 2: 56.3s  Stage 3: 623.8s  Stage 4: 0.0s  Stage 5: 4.1s)
 ============================================================
 ```
 
@@ -183,6 +191,17 @@ The completion banner shows a full run summary:
 | `fast` | One Whisper call for the full file | ~20% faster | Coarser — ~1 line per 30s chunk |
 
 For most use cases `accurate` is the right choice. `fast` is available for quick previews where exact line count doesn't matter.
+
+### Analysis report (Stage 5)
+
+When `--report` is passed, Stage 5 sends the transcript to `gemini-3-flash-preview` and writes a context-aware Markdown report. The analysis prompt is loaded from `prompts/<context>.md` — edit these files to customise what Gemini focuses on for each conversation type.
+
+| Context | Default focus |
+|---------|--------------|
+| `friend` | Emotional tone, recurring themes, mood, conversation balance |
+| `work` | Action items, decisions made, open questions, risks |
+| `interview` | Candidate strengths/weaknesses, follow-up questions, recommendation |
+| `date` | Compatibility signals, shared interests, conversation flow |
 
 ### First-run note
 
@@ -206,7 +225,13 @@ call-analysis-pipeline/
 │   ├── preprocess.py     # Stage 1: noise reduction + normalization
 │   ├── diarize.py        # Stage 2: speaker diarization
 │   ├── transcribe.py     # Stage 3: faster-whisper transcription
-│   └── export.py         # Stage 4: output formatting
+│   ├── export.py         # Stage 4: output formatting
+│   └── report.py         # Stage 5: Gemini API analysis report
+├── prompts/
+│   ├── friend.md         # Analysis prompt for friend conversations
+│   ├── work.md           # Analysis prompt for work conversations
+│   ├── interview.md      # Analysis prompt for job interviews
+│   └── date.md           # Analysis prompt for date conversations
 ├── input/                # Place your audio files here (gitignored)
 ├── output/               # Pipeline outputs land here (gitignored)
 ├── .env.example          # Template — copy to .env and fill in values

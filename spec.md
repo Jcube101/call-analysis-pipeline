@@ -2,7 +2,7 @@
 
 ## Overview
 
-A local Python pipeline that processes a recorded voice call and produces a clean, structured transcript with speaker attribution. Runs fully locally (no cloud audio processing), GPU-accelerated, with all secrets managed via `.env`.
+A local Python pipeline that processes a recorded voice call and produces a clean, structured transcript with speaker attribution and an optional AI-generated analysis report. Audio processing runs fully locally (no cloud audio processing), GPU-accelerated, with all secrets managed via `.env`. Report generation uses the Gemini API.
 
 **Tested: Windows 11, Python 3.11, NVIDIA GeForce GTX 1650 (4 GB VRAM), CUDA 12.1.**
 
@@ -20,6 +20,7 @@ A local Python pipeline that processes a recorded voice call and produces a clea
 | `--language LANG` | CLI / `.env` | BCP-47 language code, e.g. `en`, `fr`, `es` (default: `en`) |
 | `--dry-run` | CLI flag | Validate config and input without running any stage |
 | `--skip-preprocess` | CLI flag | Skip Stage 1; `--input` must be a clean 16 kHz mono WAV |
+| `--report` | CLI flag | Run Stage 5: generate an analysis report via Gemini API |
 
 CLI flags override `.env` values when both are present.
 
@@ -34,6 +35,7 @@ All outputs land in `output/`. Each run produces uniquely named transcript files
 | `<name>_clean.wav` | WAV, mono, 16 kHz | Noise-reduced, normalized audio (overwritten each run) |
 | `<name>_<YYYYMMDD_HHMMSS>.txt` | Plain text | Human-readable labeled transcript |
 | `<name>_<YYYYMMDD_HHMMSS>.json` | JSON | Structured transcript with metadata header |
+| `<name>_<YYYYMMDD_HHMMSS>_report.md` | Markdown | AI analysis report (`--report` only) |
 
 ### transcript.txt format
 
@@ -159,12 +161,31 @@ Same model and device setup, but transcribes the entire WAV in one call, then as
 
 ---
 
+### Stage 5 — Analysis Report (`stages/report.py`)
+
+**Goal:** Generate a context-aware analysis report from the transcript using the Gemini API.
+
+Only runs when `--report` is passed. `GEMINI_API_KEY` is validated early (before Stages 1–4 begin) so the run fails fast if the key is missing.
+
+| Step | Implementation |
+|------|---------------|
+| API | `google-genai` SDK, `gemini-3-flash-preview` model |
+| Prompt | Loaded from `prompts/<context>.md`; falls back to built-in defaults |
+| Metadata | Source file, context, speaker count, audio duration, per-speaker segment counts |
+| Chunking | Transcripts >500k chars split into overlapping chunks; partial reports synthesised in a second Gemini call |
+| Output | `output/<name>_<YYYYMMDD_HHMMSS>_report.md` |
+| Terminal preview | First 20 lines of the report are printed after Stage 5 completes |
+
+**Prompt customisation:** Edit `prompts/<context>.md` to change what Gemini focuses on for each conversation type. The four built-in contexts are `friend`, `work`, `interview`, and `date`.
+
+---
+
 ## Configuration (`config.py`)
 
 | Setting | Env var | CLI flag | Default |
 |---------|---------|----------|---------|
 | `huggingface_token` | `HUGGINGFACE_TOKEN` | — | `""` |
-| `anthropic_api_key` | `ANTHROPIC_API_KEY` | — | `""` |
+| `gemini_api_key` | `GEMINI_API_KEY` | — | `""` |
 | `context` | `CONVERSATION_CONTEXT` | `--context` | `"friend"` |
 | `num_speakers` | `NUM_SPEAKERS` | `--num-speakers` | `None` (auto) |
 | `whisper_model` | `WHISPER_MODEL` | `--whisper-model` | `"medium"` |
@@ -179,6 +200,7 @@ Each stage is wrapped in `try/except` in `main.py`. On failure:
 - Prints `[error] Stage N (name) failed: <message>`
 - Exits with code 1
 - Stage 2 `EnvironmentError` (missing token) is caught separately with a more specific message
+- Stage 5 `EnvironmentError` (missing Gemini key) is caught and reported before any stage runs
 
 `--dry-run` exits cleanly after config validation without executing any stage.
 
@@ -186,12 +208,12 @@ Each stage is wrapped in `try/except` in `main.py`. On failure:
 
 ## Performance (GTX 1650, accurate mode)
 
-| Audio length | Stage 2 | Stage 3 | Total |
+| Audio length | Stage 2 | Stage 3 | Total (no report) |
 |-------------|---------|---------|-------|
 | 2:01 | ~82s | ~76s | ~2:41 |
 | 10:56 | ~56s | ~624s | ~11:27 |
 
-Stage 2 scales sublinearly (pyannote batches better on longer audio). Stage 3 scales linearly with segment count (~4.7s/segment on GTX 1650). Overall ratio is ~1x real-time for longer files.
+Stage 5 (Gemini report) adds ~4–10s depending on transcript length and API latency.
 
 ---
 
@@ -206,6 +228,7 @@ Stage 2 scales sublinearly (pyannote batches better on longer audio). Stage 3 sc
 | Disk | ~1.5 GB for faster-whisper medium model cache |
 | GPU | Optional; CUDA 12.1 tested on GTX 1650 (sm_75) |
 | OS | macOS, Linux, Windows (no Unix-only shell commands) |
+| Internet | Required for Stage 5 (Gemini API calls) |
 
 ### Dependency install order
 
@@ -223,6 +246,7 @@ pip install -r requirements.txt
 | `numpy` | `<2.0` | pyannote compiled against numpy 1.x |
 | `pyannote.audio` | `<4.0` | 4.0.4 requires torch>=2.8.0 (doesn't exist) |
 | `huggingface_hub` | `<1.0.0` | 1.x removed `use_auth_token` used by pyannote 3.x internals |
+| `google-genai` | `>=1.0.0` | Replaces deprecated `google-generativeai` package |
 
 ---
 
@@ -231,6 +255,7 @@ pip install -r requirements.txt
 - All audio processing is **fully local** — no audio is sent to any external service
 - faster-whisper runs offline after initial model download
 - pyannote model weights downloaded from HuggingFace once, cached locally
+- Stage 5 sends transcript text to the Gemini API — do not use `--report` if the recording is confidential
 - `.env` is gitignored; secrets never committed
 - `input/` and `output/` are gitignored; recordings and transcripts never committed
 
@@ -238,7 +263,6 @@ pip install -r requirements.txt
 
 ## Deferred / out of scope (current version)
 
-- Large file chunking (>160 MB)
-- Report generation via Claude API — `ANTHROPIC_API_KEY` reserved for future Stage 5
+- Large file chunking (>160 MB audio)
 - Real-time / streaming processing
 - Web UI or REST API wrapper

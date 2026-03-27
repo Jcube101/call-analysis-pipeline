@@ -200,3 +200,20 @@ pyannote expects `(channels, time)` — opposite of numpy's default `(time, chan
 **Conclusion:** The time saving from eliminating per-call overhead is modest (~20%) while the quality loss is significant. `accurate` is the correct default. `fast` is only worth using when coarse output is explicitly acceptable.
 
 **Future improvement:** A smarter fast mode would merge same-speaker diarization *turns* (not micro-segments) and transcribe per turn — fewer calls than accurate, better granularity than current fast.
+
+---
+
+## 15. google-generativeai is deprecated — use google-genai instead
+
+**Problem:** `import google.generativeai` emitted a `FutureWarning` stating that all support for the `google.generativeai` package has ended and it will no longer receive updates or bug fixes.
+
+**Fix:** Switch to the `google-genai` package (`pip install google-genai`). The new client API:
+```python
+from google import genai
+
+client = genai.Client(api_key=api_key)
+response = client.models.generate_content(model="gemini-3-flash-preview", contents=prompt)
+return response.text
+```
+
+**Note:** `google-generativeai` and `google-genai` are separate packages with different import paths (`google.generativeai` vs `google.genai`) and different client patterns. Do not mix them.
