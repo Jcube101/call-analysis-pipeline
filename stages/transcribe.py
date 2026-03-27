@@ -40,7 +40,9 @@ _WHISPER_SR = 16_000
 
 # Diarization segments from the same speaker within this gap are merged
 # before transcription to reduce Whisper calls and improve context.
-_SPEAKER_MERGE_GAP_S = 0.5
+# Keep this small — it's meant to close tiny pyannote-internal gaps, not
+# collapse entire speaking turns.
+_SPEAKER_MERGE_GAP_S = 0.1
 
 
 def _audio_segment_to_numpy(segment: AudioSegment) -> np.ndarray:
@@ -199,8 +201,12 @@ def run(
     global _active_model
     model = WhisperModel(model_name, device=device, compute_type=compute_type)
     _active_model = model  # prevent GC / CUDA teardown until process exit
+    before = len(segments)
     segments = _merge_diarization_segments(segments)
-    print(f"[Stage 3] Model loaded. Running in '{mode}' mode on {len(segments)} segment(s)...")
+    after = len(segments)
+    merged_count = before - after
+    merge_note = f" ({merged_count} merged)" if merged_count else ""
+    print(f"[Stage 3] Model loaded. Running in '{mode}' mode on {after} segment(s){merge_note}...")
 
     audio = AudioSegment.from_wav(clean_wav_path)
 
