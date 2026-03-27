@@ -128,7 +128,21 @@ This pattern was used to diagnose the `DiarizeOutput` issue and is now baked int
 
 ## 7. CPU-only torch on Windows is a legitimate and stable setup
 
-pyannote's GPU acceleration is nice but not required. A 2-minute call processed fine on CPU in a reasonable time. The CPU wheel from `download.pytorch.org/whl/cpu` is more stable for this use case than the PyPI torch because:
-- It doesn't pull in CUDA runtime dependencies
-- It pins to a specific, tested version
-- It leaves no ambiguity for pip's dependency resolver
+**Future improvement:** A smarter fast mode would merge same-speaker diarization *turns* (not micro-segments) and transcribe per turn — fewer calls than accurate, better granularity than current fast.
+
+---
+
+## 15. google-generativeai is deprecated — use google-genai instead
+
+**Problem:** `import google.generativeai` emitted a `FutureWarning` stating that all support for the `google.generativeai` package has ended and it will no longer receive updates or bug fixes.
+
+**Fix:** Switch to the `google-genai` package (`pip install google-genai`). The new client API:
+```python
+from google import genai
+
+client = genai.Client(api_key=api_key)
+response = client.models.generate_content(model="gemini-3-flash-preview", contents=prompt)
+return response.text
+```
+
+**Note:** `google-generativeai` and `google-genai` are separate packages with different import paths (`google.generativeai` vs `google.genai`) and different client patterns. Do not mix them.

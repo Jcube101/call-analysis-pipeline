@@ -8,12 +8,11 @@ Takes an audio recording of a two-person conversation (MP3, M4A, WAV, or any ffm
 1. A noise-reduced WAV (`output/*_clean.wav`)
 2. A speaker-diarized, timestamped transcript (`output/<name>_<timestamp>.txt`)
 3. A structured JSON file ready for downstream analysis (`output/<name>_<timestamp>.json`)
-
-Future: auto-generate an analysis report via the Claude API (not yet implemented).
+4. An AI-generated analysis report (`output/<name>_<timestamp>_report.md`) — triggered with `--report`, uses Gemini API
 
 ## Status
 
-**v0.1 is fully functional and tested end-to-end** on a real M4A call recording. All four stages run correctly on Windows with CPU-only torch.
+**v0.3 is fully functional and tested end-to-end with GPU acceleration** on real call recordings (GTX 1650, CUDA 12.1, Windows 11, Python 3.11). Tested on files up to 10:56 in length. Stage 5 (Gemini report) validated on real transcripts.
 
 ## How to run
 
@@ -23,6 +22,8 @@ python main.py --input input/call.mp3
 python main.py --input input/call.mp3 --context work --num-speakers 3
 python main.py --input input/call.mp3 --transcription-mode fast
 python main.py --input input/call.mp3 --language fr
+# Generate analysis report via Gemini API:
+python main.py --input input/call.mp3 --context work --report
 # Utility flags:
 python main.py --input input/call.mp3 --dry-run
 python main.py --input output/call_clean.wav --skip-preprocess
@@ -38,8 +39,14 @@ config.py        — Settings dataclass, loads .env via python-dotenv
 stages/
   preprocess.py  — Stage 1: noise reduction + normalization (pydub, noisereduce)
   diarize.py     — Stage 2: speaker diarization (pyannote/speaker-diarization-3.1)
-  transcribe.py  — Stage 3: Whisper transcription (openai-whisper, runs locally)
-  export.py      — Stage 4: writes .txt and .json output with metadata header
+  transcribe.py  — Stage 3: faster-whisper transcription (runs locally, GPU-accelerated)
+  export.py      — Stage 4: writes timestamped .txt and .json output
+  report.py      — Stage 5: Gemini API analysis report (--report flag only)
+prompts/
+  friend.md      — analysis prompt for friend conversations (user-editable)
+  work.md        — analysis prompt for work conversations (user-editable)
+  interview.md   — analysis prompt for job interviews (user-editable)
+  date.md        — analysis prompt for date conversations (user-editable)
 input/           — place source audio files here (gitignored, must exist locally)
 output/          — pipeline outputs land here (gitignored, must exist locally)
 ```
@@ -55,7 +62,51 @@ output/          — pipeline outputs land here (gitignored, must exist locally)
 
 ## pyannote API compatibility (important)
 
-pyannote.audio 3.x no longer returns a `pyannote.core.Annotation` directly from the pipeline. It returns a `DiarizeOutput` dataclass with the annotation stored in the `exclusive_speaker_diarization` attribute. `diarize.py` handles this with a fallback chain:
+Each run produces uniquely named files using the source filename + timestamp:
+```
+output/First_Test_File_20260327_143022.txt
+output/First_Test_File_20260327_143022.json
+output/First_Test_File_20260327_143022_report.md   (--report only)
+output/First_Test_File_clean.wav
+```
+The clean WAV is overwritten each run (Stage 1 output). Transcripts and reports are never overwritten.
+
+## GPU / transcription stack
+
+Transcription uses **faster-whisper** (CTranslate2-based) instead of openai-whisper:
+- On CUDA: `device="cuda", compute_type="int8_float16"` — fits in 4 GB VRAM
+- On CPU: `device="cpu", compute_type="int8"`
+
+**ctranslate2 CUDA teardown bug (Windows):** ctranslate2's `__del__` calls `exit()` when the WhisperModel is garbage-collected mid-process on Windows. Fixed by holding a module-level reference (`_active_model`) so cleanup is deferred to process exit. Do not add `del model` inside `transcribe.run()`.
+
+## Transcription modes
+
+Two modes selectable via `TRANSCRIPTION_MODE` env var or `--transcription-mode` CLI flag:
+
+- **accurate** (default): one `model.transcribe()` call per diarization segment. Produces fine-grained sentence-level output. ~1x real-time on GTX 1650.
+- **fast**: one `model.transcribe()` call on the full WAV, then speaker assignment via max-overlap with diarization windows. ~20% faster but produces far fewer lines — Whisper's internal ~30s chunking limits granularity to ~4 segments for a 2-min file. Only use when coarse output is acceptable.
+
+**Do not** pre-merge diarization segments before transcription. pyannote commonly outputs many same-speaker segments with tiny gaps (<100ms) between them — any gap threshold collapses entire speaking turns into one line.
+
+## Stage 5 — Gemini report
+
+Stage 5 is optional and only runs when `--report` is passed. It sends the transcript to `gemini-3-flash-preview` via the `google-genai` SDK.
+
+- Prompt loaded from `prompts/<context>.md` — user can edit these freely
+- Falls back to built-in defaults if the prompt file is missing
+- Large transcripts (>500k chars) are chunked and partial reports synthesised
+- Output: `output/<name>_<timestamp>_report.md`
+- First 20 lines printed to terminal as a preview
+
+**SDK note:** Use `google-genai` (not the deprecated `google-generativeai`). Import path is `from google import genai`. Client pattern: `client = genai.Client(api_key=...)`, then `client.models.generate_content(model=..., contents=...)`.
+
+## pyannote API compatibility
+
+pyannote.audio 3.x no longer returns a `pyannote.core.Annotation` directly — it returns a `DiarizeOutput` dataclass. `diarize.py` handles this with a fallback chain checking `itertracks` → `exclusive_speaker_diarization` → `speaker_diarization`.
+
+## HuggingFace authentication
+
+pyannote 3.4.0 + huggingface_hub 0.x: `Pipeline.from_pretrained()` no longer accepts `token=` or `use_auth_token=` as keyword arguments. Use `huggingface_hub.login(token=...)` before calling `from_pretrained()`:
 
 ```python
 if hasattr(diarization, "itertracks"):          # old API
@@ -84,7 +135,7 @@ This avoids a dependency on `torchcodec` (which is not installed). A `UserWarnin
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `HUGGINGFACE_TOKEN` | Yes | For pyannote diarization model download |
-| `ANTHROPIC_API_KEY` | No (future) | For report generation stage |
+| `GEMINI_API_KEY` | With `--report` | For Stage 5 report generation via Gemini API |
 | `CONVERSATION_CONTEXT` | No | `friend` / `work` / `interview` / `date` (default: `friend`) |
 | `NUM_SPEAKERS` | No | Integer or blank for auto-detect (default: auto) |
 | `WHISPER_MODEL` | No | `tiny` / `base` / `small` / `medium` / `large` (default: `medium`) |
@@ -93,7 +144,7 @@ This avoids a dependency on `torchcodec` (which is not installed). A `UserWarnin
 
 ## Dependencies and install order
 
-Key packages: `pydub`, `noisereduce`, `pyannote.audio`, `faster-whisper`, `torch`, `soundfile`, `librosa`, `python-dotenv`, `tqdm`.
+Key packages: `pydub`, `noisereduce`, `pyannote.audio`, `faster-whisper`, `torch`, `soundfile`, `librosa`, `python-dotenv`, `tqdm`, `google-genai`.
 System dependency: `ffmpeg` must be on PATH.
 
 Key packages: `pydub`, `noisereduce`, `pyannote.audio`, `openai-whisper`, `torch`, `soundfile`, `librosa`, `python-dotenv`, `tqdm`.
@@ -104,6 +155,7 @@ Key version constraints (all in `requirements.txt`):
 - `numpy<2.0` — pyannote compiled against numpy 1.x
 - `pyannote.audio<4.0` — 4.0.4 requires torch>=2.8.0 which doesn't exist yet
 - `huggingface_hub<1.0.0` — 1.x removed `use_auth_token` used internally by pyannote 3.x
+- `google-genai>=1.0.0` — replaces deprecated `google-generativeai`
 
 ## Install order matters (Windows / CPU-only)
 
