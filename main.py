@@ -272,7 +272,7 @@ def main() -> None:
                 num_speakers=len(speaker_counts),
                 audio_duration=audio_duration,
                 speaker_counts=dict(speaker_counts),
-                api_key=settings.anthropic_api_key,
+                api_key=settings.gemini_api_key,
                 prompts_dir="prompts",
             )
         except Exception as e:

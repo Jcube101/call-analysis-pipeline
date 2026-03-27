@@ -1,7 +1,7 @@
 """
-Stage 5 — Analysis Report (Claude API)
+Stage 5 — Analysis Report (Gemini API)
 
-Sends the transcript to Claude and writes a context-aware Markdown report.
+Sends the transcript to Google Gemini and writes a context-aware Markdown report.
 
 The prompt is loaded from prompts/<context>.md — edit those files to customise
 the analysis focus for each conversation type.
@@ -18,15 +18,17 @@ Output
 from __future__ import annotations
 
 import os
-import json
 from datetime import datetime
 from typing import Optional
 
 # Loaded lazily so the import doesn't fail when --report is not used
-_anthropic = None
+_genai = None
 
-# Max characters per chunk sent to Claude (~80k tokens at ~4 chars/token = 320k chars)
-_CHUNK_CHARS = 320_000
+# Model to use for report generation
+_MODEL = "gemini-3-flash-preview"
+
+# Max characters per chunk sent to Gemini (~1M token context, cap at 500k chars ~125k tokens)
+_CHUNK_CHARS = 500_000
 
 # Number of characters of overlap between adjacent chunks
 _OVERLAP_CHARS = 2_000
@@ -104,15 +106,11 @@ def _build_metadata_block(
     return "\n".join(lines)
 
 
-def _call_claude(client, system_prompt: str, user_message: str) -> str:
-    """Send one request to Claude and return the response text."""
-    with client.messages.stream(
-        model="claude-opus-4-6",
-        max_tokens=4096,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_message}],
-    ) as stream:
-        return stream.get_final_message().content[0].text
+def _call_gemini(model, system_prompt: str, user_message: str) -> str:
+    """Send one request to Gemini and return the response text."""
+    full_prompt = f"{system_prompt}\n\n{user_message}"
+    response = model.generate_content(full_prompt)
+    return response.text
 
 
 def _split_transcript(transcript_text: str) -> list[str]:
@@ -170,20 +168,21 @@ def run(
         num_speakers:   Number of detected speakers.
         audio_duration: Audio length in seconds (may be None).
         speaker_counts: Dict mapping speaker label → segment count.
-        api_key:        Anthropic API key.
+        api_key:        Google Gemini API key.
         prompts_dir:    Directory containing <context>.md prompt files.
 
     Returns:
         Path to the written report file.
     """
-    global _anthropic
-    if _anthropic is None:
-        import anthropic as _anthropic_module
-        _anthropic = _anthropic_module
+    global _genai
+    if _genai is None:
+        import google.generativeai as _genai_module
+        _genai = _genai_module
 
-    print(f"\n[Stage 5] Generating analysis report (context: {context})...")
+    print(f"\n[Stage 5] Generating analysis report (context: {context}, model: {_MODEL})...")
 
-    client = _anthropic.Anthropic(api_key=api_key)
+    _genai.configure(api_key=api_key)
+    model = _genai.GenerativeModel(_MODEL)
 
     instruction_prompt = _load_prompt(context, prompts_dir)
     metadata_block = _build_metadata_block(
@@ -195,12 +194,12 @@ def run(
     n_chunks = len(chunks)
 
     if n_chunks == 1:
-        print(f"[Stage 5] Sending transcript to Claude ({len(transcript_text):,} chars)...")
+        print(f"[Stage 5] Sending transcript to Gemini ({len(transcript_text):,} chars)...")
         user_message = (
             f"## Conversation metadata\n\n{metadata_block}\n\n"
             f"## Transcript\n\n{transcript_text}"
         )
-        report_body = _call_claude(client, instruction_prompt, user_message)
+        report_body = _call_gemini(model, instruction_prompt, user_message)
     else:
         print(f"[Stage 5] Transcript is large — splitting into {n_chunks} chunks...")
         partial_reports: list[str] = []
@@ -211,7 +210,7 @@ def run(
                 f"## Conversation metadata\n\n{metadata_block}\n\n"
                 f"## Transcript (part {i} of {n_chunks})\n\n{chunk}"
             )
-            partial = _call_claude(client, instruction_prompt, user_message)
+            partial = _call_gemini(model, instruction_prompt, user_message)
             partial_reports.append(f"### Part {i} of {n_chunks}\n\n{partial}")
 
         print(f"[Stage 5] Synthesising {n_chunks} partial reports...")
@@ -222,7 +221,7 @@ def run(
             "Maintain the analytical focus from the original instruction."
         )
         combined_partials = "\n\n---\n\n".join(partial_reports)
-        report_body = _call_claude(client, synthesis_prompt, combined_partials)
+        report_body = _call_gemini(model, synthesis_prompt, combined_partials)
 
     # Build the full report with a header
     processed_at = datetime.now().isoformat(timespec="seconds")

@@ -25,5 +25,5 @@ torchaudio==2.1.0+cu121
 python-dotenv>=1.0.0
 tqdm>=4.65.0
 
-# Claude API — Stage 5 report generation (optional; only used with --report flag)
-anthropic>=0.40.0
+# Google Gemini API — Stage 5 report generation (optional; only used with --report flag)
+google-generativeai>=0.8.0
