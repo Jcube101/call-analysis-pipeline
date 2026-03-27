@@ -135,7 +135,7 @@ def _transcribe_fast(
     Much faster than accurate mode for typical recordings.
     """
     audio_array = _audio_segment_to_numpy(audio)
-    fw_segs_gen, _ = model.transcribe(audio_array, language=settings.whisper_language, vad_filter=True)
+    fw_segs_gen, _ = model.transcribe(audio_array, language=settings.whisper_language)
     fw_segs = list(fw_segs_gen)  # consume generator before alignment
     return _assign_speakers(fw_segs, segments)
 
