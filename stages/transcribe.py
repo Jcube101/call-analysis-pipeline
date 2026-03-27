@@ -86,6 +86,7 @@ def _assign_speakers(fw_segs: list, diar_segs: list[dict]) -> list[dict]:
         else:
             merged.append(dict(item))
 
+    print(f"[Stage 3][debug] whisper segments: {len(fw_segs)}  →  assigned: {len(assigned)}  →  after merge: {len(merged)}")
     return merged
 
 
