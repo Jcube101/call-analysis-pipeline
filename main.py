@@ -6,12 +6,16 @@ Usage:
     python main.py --input input/call.mp3 --context work --num-speakers 3
     python main.py --input input/call.mp3 --transcription-mode accurate
     python main.py --input input/call.mp3 --language fr
+    python main.py --input input/call.mp3 --dry-run
+    python main.py --input input/call_clean.wav --skip-preprocess
 """
 
 import argparse
 import os
 import shutil
 import sys
+import time
+from collections import Counter
 
 from config import settings
 from stages import preprocess, diarize, transcribe, export
@@ -45,6 +49,17 @@ def _print_device_info() -> None:
             print(f"  Transcription: CPU (faster-whisper int8)")
     except ImportError:
         print(f"  CUDA:         torch not found")
+
+
+def _fmt_duration(seconds: float) -> str:
+    """Format seconds as m:ss or h:mm:ss."""
+    seconds = int(seconds)
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -83,7 +98,7 @@ def _parse_args() -> argparse.Namespace:
         metavar="MODE",
         default=None,
         dest="transcription_mode",
-        help="Transcription strategy: fast | accurate (default: fast)",
+        help="Transcription strategy: fast | accurate (default: accurate)",
     )
     parser.add_argument(
         "--language",
@@ -91,6 +106,20 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         dest="language",
         help="Whisper language code, e.g. en, fr, es (default: en)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        dest="dry_run",
+        help="Validate config and input file without running any pipeline stages",
+    )
+    parser.add_argument(
+        "--skip-preprocess",
+        action="store_true",
+        default=False,
+        dest="skip_preprocess",
+        help="Skip Stage 1 — input must already be a clean 16 kHz mono WAV",
     )
     return parser.parse_args()
 
@@ -102,6 +131,10 @@ def main() -> None:
     # Validate input file
     if not os.path.isfile(args.input):
         print(f"[error] Input file not found: {args.input}")
+        sys.exit(1)
+
+    if args.skip_preprocess and not args.input.lower().endswith(".wav"):
+        print("[error] --skip-preprocess requires a WAV file as --input")
         sys.exit(1)
 
     # Apply CLI overrides on top of .env settings
@@ -125,20 +158,38 @@ def main() -> None:
     print(f"  Whisper:  {settings.whisper_model}")
     print(f"  Tx Mode:  {settings.transcription_mode}")
     print(f"  Language: {settings.whisper_language}")
+    if args.skip_preprocess:
+        print(f"  Stage 1:  SKIPPED (using input as clean WAV)")
+    if args.dry_run:
+        print(f"  Mode:     DRY RUN")
     _print_device_info()
     print("=" * 60)
 
+    if args.dry_run:
+        print("\n[dry-run] Config and input file are valid. No stages executed.")
+        sys.exit(0)
+
+    stage_times: dict[str, float] = {}
+    total_start = time.time()
+
     # --- Stage 1: Pre-processing ---
-    try:
-        clean_wav = preprocess.run(
-            input_path=args.input,
-            output_dir=output_dir,
-        )
-    except Exception as e:
-        print(f"\n[error] Stage 1 (pre-processing) failed: {e}")
-        sys.exit(1)
+    if args.skip_preprocess:
+        clean_wav = args.input
+        stage_times["Stage 1"] = 0.0
+    else:
+        t = time.time()
+        try:
+            clean_wav = preprocess.run(
+                input_path=args.input,
+                output_dir=output_dir,
+            )
+        except Exception as e:
+            print(f"\n[error] Stage 1 (pre-processing) failed: {e}")
+            sys.exit(1)
+        stage_times["Stage 1"] = time.time() - t
 
     # --- Stage 2: Diarization ---
+    t = time.time()
     try:
         segments = diarize.run(
             clean_wav_path=clean_wav,
@@ -151,8 +202,10 @@ def main() -> None:
     except Exception as e:
         print(f"\n[error] Stage 2 (diarization) failed: {e}")
         sys.exit(1)
+    stage_times["Stage 2"] = time.time() - t
 
     # --- Stage 3: Transcription ---
+    t = time.time()
     try:
         transcribed_segments = transcribe.run(
             clean_wav_path=clean_wav,
@@ -163,8 +216,10 @@ def main() -> None:
     except Exception as e:
         print(f"\n[error] Stage 3 (transcription) failed: {e}")
         sys.exit(1)
+    stage_times["Stage 3"] = time.time() - t
 
     # --- Stage 4: Export ---
+    t = time.time()
     try:
         txt_path, json_path = export.run(
             segments=transcribed_segments,
@@ -176,12 +231,35 @@ def main() -> None:
     except Exception as e:
         print(f"\n[error] Stage 4 (export) failed: {e}")
         sys.exit(1)
+    stage_times["Stage 4"] = time.time() - t
+
+    # --- Summary ---
+    total_elapsed = time.time() - total_start
+
+    try:
+        from pydub import AudioSegment as _AS
+        audio_duration = len(_AS.from_wav(clean_wav)) / 1000.0
+    except Exception:
+        audio_duration = None
+
+    speaker_counts = Counter(s["speaker"] for s in transcribed_segments)
+    speaker_breakdown = "  ".join(
+        f"{spk}: {cnt}" for spk, cnt in sorted(speaker_counts.items())
+    )
+    timing_breakdown = "  ".join(
+        f"{name}: {t:.1f}s" for name, t in stage_times.items() if t > 0
+    )
 
     print("\n" + "=" * 60)
     print("  Pipeline complete!")
     print(f"  Clean audio:  {clean_wav}")
     print(f"  Transcript:   {txt_path}")
     print(f"  JSON:         {json_path}")
+    print(f"  Segments:     {len(transcribed_segments)}  |  Speakers: {len(speaker_counts)}  ({speaker_breakdown})")
+    if audio_duration is not None:
+        print(f"  Audio:        {_fmt_duration(audio_duration)}  |  Elapsed: {_fmt_duration(total_elapsed)}  ({timing_breakdown})")
+    else:
+        print(f"  Elapsed:      {_fmt_duration(total_elapsed)}  ({timing_breakdown})")
     print("=" * 60)
 
 
