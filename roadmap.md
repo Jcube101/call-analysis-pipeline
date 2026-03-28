@@ -70,6 +70,7 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 
 ### Quality improvements
 
+- [ ] **Speaker re-identification** — extract voice embeddings per segment (pyannote SpeakerEmbedding), cluster globally across the full recording, and reassign labels so the same physical person always gets the same label. Fixes label-flipping on long recordings. Currently mitigated by speaker-aware prompt wording.
 - [ ] **Speaker name mapping** — `--speaker-names "Alice,Bob"` to replace generic labels
 - [ ] **Whisper word-level timestamps** — `word_timestamps=True` for finer-grained JSON
 - [ ] **Confidence scores** — include Whisper segment-level log-probability in JSON
