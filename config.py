@@ -46,6 +46,13 @@ class Settings:
     # or via --speaker-names CLI flag.  Empty list = use generic labels.
     speaker_names: list = field(default_factory=list)
 
+    # Word-level timestamps — when True, each JSON segment includes a "words"
+    # list with per-word start/end times and probabilities.
+    # Adds ~10-15% overhead to Whisper transcription calls.
+    word_timestamps: bool = field(
+        default_factory=lambda: os.getenv("WORD_TIMESTAMPS", "").strip().lower() in ("1", "true", "yes")
+    )
+
     def __post_init__(self) -> None:
         # Parse NUM_SPEAKERS from env if not overridden programmatically
         if self.num_speakers is None:
@@ -85,6 +92,7 @@ class Settings:
         transcription_mode: Optional[str] = None,
         language: Optional[str] = None,
         speaker_names: Optional[list] = None,
+        word_timestamps: Optional[bool] = None,
     ) -> None:
         """Apply CLI overrides on top of .env values."""
         if context is not None:
@@ -108,6 +116,8 @@ class Settings:
             self.whisper_language = language.strip().lower()
         if speaker_names is not None:
             self.speaker_names = speaker_names
+        if word_timestamps is not None:
+            self.word_timestamps = word_timestamps
 
     def validate_for_diarization(self) -> None:
         """Raise if the HuggingFace token is missing (required for pyannote)."""

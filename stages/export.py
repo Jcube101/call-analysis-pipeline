@@ -101,17 +101,22 @@ def run(
     print(f"[Stage 4] Text transcript saved:  {txt_path}")
 
     # --- JSON ---
+    def _seg_to_dict(seg: dict) -> dict:
+        out = {
+            "start":   round(seg["start"], 3),
+            "end":     round(seg["end"], 3),
+            "speaker": seg["speaker"],
+            "text":    seg["text"],
+        }
+        if "confidence" in seg:
+            out["confidence"] = seg["confidence"]
+        if "words" in seg:
+            out["words"] = seg["words"]
+        return out
+
     json_payload = {
         "metadata": metadata,
-        "transcript": [
-            {
-                "start": round(seg["start"], 3),
-                "end": round(seg["end"], 3),
-                "speaker": seg["speaker"],
-                "text": seg["text"],
-            }
-            for seg in segments
-        ],
+        "transcript": [_seg_to_dict(seg) for seg in segments],
     }
 
     json_path = os.path.join(output_dir, f"{file_stem}.json")
@@ -154,17 +159,22 @@ def write_relabelled(
     metadata["speaker_names"] = speaker_names
     metadata["relabelled_at"] = datetime.now().isoformat(timespec="seconds")
 
+    def _seg_to_dict(seg: dict) -> dict:
+        out = {
+            "start":   round(seg["start"], 3),
+            "end":     round(seg["end"], 3),
+            "speaker": seg["speaker"],
+            "text":    seg["text"],
+        }
+        if "confidence" in seg:
+            out["confidence"] = seg["confidence"]
+        if "words" in seg:
+            out["words"] = seg["words"]
+        return out
+
     payload = {
         "metadata": metadata,
-        "transcript": [
-            {
-                "start": round(seg["start"], 3),
-                "end": round(seg["end"], 3),
-                "speaker": seg["speaker"],
-                "text": seg["text"],
-            }
-            for seg in segments
-        ],
+        "transcript": [_seg_to_dict(seg) for seg in segments],
     }
 
     with open(out_path, "w", encoding="utf-8") as f:
