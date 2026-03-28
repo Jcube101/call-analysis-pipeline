@@ -12,7 +12,8 @@ A local Python pipeline that processes a recorded voice call and produces a clea
 
 | Parameter | Source | Description |
 |-----------|--------|-------------|
-| `--input FILE` | CLI arg | Path to source audio file (MP3, M4A, WAV, MPEG, or any ffmpeg-supported format) |
+| `--input FILE` | CLI arg | Path to source audio file (MP3, M4A, WAV, MPEG, or any ffmpeg-supported format). Required unless `--from-json` is used. |
+| `--from-json FILE` | CLI arg | Skip Stages 1–4; generate a Gemini report from an existing transcript JSON (implies `--report`) |
 | `--context CTX` | CLI / `.env` | Conversation type: `friend`, `work`, `interview`, `date` |
 | `--num-speakers N` | CLI / `.env` | Integer speaker count, or omit for auto-detection |
 | `--whisper-model SIZE` | CLI / `.env` | Whisper model size: `tiny`, `base`, `small`, `medium` (default), `large` |
@@ -180,7 +181,9 @@ Only runs when `--report` is passed. `GEMINI_API_KEY` is validated early (before
 | Output | `output/<name>_<YYYYMMDD_HHMMSS>_report.md` |
 | Terminal preview | First 20 lines of the report are printed after Stage 5 completes |
 
-**Prompt customisation:** Edit `prompts/<context>.md` to change what Gemini focuses on for each conversation type. The four built-in contexts are `friend`, `work`, `interview`, and `date`.
+**Prompt customisation:** Edit `prompts/<context>.md` to change what Gemini focuses on for each conversation type. The four built-in contexts are `friend`, `work`, `interview`, and `date`. Each prompt defines specific output sections and includes a speaker label reliability warning — pyannote's automatic diarisation can flip speaker labels on long recordings, so prompts instruct Gemini to base analysis on content rather than assuming label consistency.
+
+**`--from-json` mode:** `main.py` supports `python main.py --from-json output/<name>.json` to run Stage 5 on an existing transcript without re-running Stages 1–4. Context and speaker count are read from the JSON metadata and can be overridden with `--context`.
 
 ---
 

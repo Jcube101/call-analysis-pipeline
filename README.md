@@ -146,8 +146,9 @@ python main.py --input input/call.mp3 --dry-run
 # Skip noise reduction (re-run on an already-cleaned WAV)
 python main.py --input output/call_clean.wav --skip-preprocess
 
-# Skip preprocessing and generate report only (transcript already exists)
-python main.py --input output/call_clean.wav --context work --report --skip-preprocess
+# Generate a report from an existing transcript JSON (skips Stages 1–4 entirely)
+python main.py --from-json output/call_20260327_143022.json
+python main.py --from-json output/call_20260327_143022.json --context work
 ```
 
 The startup banner shows settings and device info:
@@ -191,14 +192,21 @@ For most use cases `accurate` is the right choice. `fast` is available for quick
 
 ### Analysis report (Stage 5)
 
-When `--report` is passed, Stage 5 sends the transcript to `gemini-3-flash-preview` and writes a context-aware Markdown report. The analysis prompt is loaded from `prompts/<context>.md` — edit these files to customise what Gemini focuses on for each conversation type.
+When `--report` is passed, Stage 5 sends the transcript to `gemini-3-flash-preview` and writes a context-aware Markdown report. The prompt is loaded from `prompts/<context>.md` — edit these files freely to customise the analysis focus.
 
-| Context | Default focus |
-|---------|--------------|
-| `friend` | Emotional tone, recurring themes, mood, conversation balance |
-| `work` | Action items, decisions made, open questions, risks |
-| `interview` | Candidate strengths/weaknesses, follow-up questions, recommendation |
-| `date` | Compatibility signals, shared interests, conversation flow |
+Each prompt defines structured output sections and includes a speaker reliability warning (pyannote's diarisation can flip labels on long recordings — Gemini is instructed to base analysis on content, not label consistency).
+
+| Context | Output sections |
+|---------|----------------|
+| `friend` | Summary, mood/energy, main topics, highlights, concerns, conversation dynamics, recurring themes |
+| `work` | Executive summary, participants, decisions, action item table (what/owner/deadline), open questions, topics, risks, meeting effectiveness |
+| `interview` | Speaker ID inference, candidate overview, strengths/concerns with evidence, comms style, cultural fit, candidate questions, suggested follow-ups, recommendation |
+| `date` | Vibe, conversation balance, common ground, differences, highlights, awkward moments, self-revelations, green/red flags, overall assessment |
+
+To generate a report on an already-processed transcript without re-running the pipeline:
+```bash
+python main.py --from-json output/call_20260327_143022.json --context work
+```
 
 ### First-run note
 
