@@ -128,11 +128,23 @@ This pattern was used to diagnose the `DiarizeOutput` issue and is now baked int
 
 ## 7. CPU-only torch on Windows is a legitimate and stable setup
 
-**Future improvement:** A smarter fast mode would merge same-speaker diarization *turns* (not micro-segments) and transcribe per turn — fewer calls than accurate, better granularity than current fast.
+The `torch==2.1.0+cpu` build works reliably on Windows 11 for pyannote diarization and faster-whisper transcription. CUDA is not required for the pipeline to function — it just reduces transcription time from ~10x real-time to ~1x real-time. All core logic was developed and validated on CPU before GPU was added.
 
 ---
 
-## 16. noisereduce STFT causes OOM on long recordings — use chunked processing
+## 8. pyannote's SpeakerEmbedding pipeline calls `.to(device)` on the AudioFile dict
+
+**Problem:** Attempting to extract per-segment voice embeddings by calling `pipeline._embedding({"waveform": tensor, "sample_rate": int})` raised `'dict' object has no attribute 'to'` for every segment. 185 segments processed in <0.002 s (all silently failed).
+
+**Root cause:** `pipeline._embedding` is a `SpeakerEmbedding` pipeline (not a raw `Inference` object). Internally, it calls `file.to(device)` on the AudioFile argument — expecting a pyannote `ProtocolFile` object that has a `.to()` method. Plain Python dicts do not have `.to()`. Navigating to the inner `Inference` object (`pipeline._embedding._embedding`) did not resolve it — the `.to(dict)` call occurs at a different level of the stack.
+
+**Fix:** Abandon pyannote's embedding API entirely for this use case. Use `librosa.feature.mfcc` + delta features (mean-pooled over time) per segment, then cluster with KMeans. MFCC features are sufficient to distinguish two speakers reliably on call recordings and have no dependency on pyannote internals or GPU placement.
+
+**Lesson:** When a third-party internal API (prefixed with `_`) fails in an opaque way across multiple nesting levels, the right move is to replace it with a self-contained implementation rather than keep digging into private internals.
+
+---
+
+## 9. noisereduce STFT causes OOM on long recordings — use chunked processing
 
 **Problem:** `noisereduce.reduce_noise()` on a 90+ minute audio array caused RAM spikes of 3–4 GB and risked OOM crashes.
 
@@ -153,7 +165,7 @@ Peak RAM stays at ~350 MB regardless of recording length.
 
 ---
 
-## 17. Dead code in Stage 2 was loading full audio for no reason
+## 10. Dead code in Stage 2 was loading full audio for no reason
 
 **Problem:** `diarize.py` called `_normalize_speaker_segments()` but immediately discarded the return value. For a 2h40m file this loaded ~350 MB of audio and created per-speaker audio chunks that were never used.
 
@@ -163,7 +175,7 @@ Peak RAM stays at ~350 MB regardless of recording length.
 
 ---
 
-## 18. Pipeline scales linearly with recording length at ~1x real-time on GTX 1650
+## 11. Pipeline scales linearly with recording length at ~1x real-time on GTX 1650
 
 **Observation:** 2h40m recording processed in 2h43m total elapsed:
 - Stage 1 (noise reduction): 2:53 (163 chunks × ~1s each)
@@ -173,7 +185,7 @@ Peak RAM stays at ~350 MB regardless of recording length.
 
 **Conclusion:** Accurate mode scales linearly with segment count. Stage 2 is sublinear (pyannote processes audio in batches that amortise well). There is no hard ceiling for file length — the pipeline will complete in approximately real-time on a GTX 1650 for any length recording.
 
-## 15. google-generativeai is deprecated — use google-genai instead
+## 12. google-generativeai is deprecated — use google-genai instead
 
 **Problem:** `import google.generativeai` emitted a `FutureWarning` stating that all support for the `google.generativeai` package has ended and it will no longer receive updates or bug fixes.
 

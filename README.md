@@ -51,11 +51,17 @@ output/
       "start": 4.2,
       "end": 9.8,
       "speaker": "Speaker A",
-      "text": "Hey, how are you doing..."
+      "text": "Hey, how are you doing...",
+      "confidence": 0.91,
+      "words": [
+        {"word": "Hey,", "start": 4.2, "end": 4.5, "probability": 0.99}
+      ]
     }
   ]
 }
 ```
+
+`confidence` is always present (0–1 score). `words` is only included when `--word-timestamps` is passed.
 
 ## Setup
 
@@ -111,6 +117,7 @@ Edit `.env` and fill in:
 - `TRANSCRIPTION_MODE` — `accurate` (default) or `fast`
 - `WHISPER_LANGUAGE` — BCP-47 language code, e.g. `en`, `fr`, `es` (default: `en`)
 - `SPEAKER_NAMES` — comma-separated real names, e.g. `Alice,Bob` (optional; replaces generic `Speaker A/B` labels)
+- `WORD_TIMESTAMPS` — `true` to include per-word timestamps in JSON output (off by default; ~10-15% overhead)
 
 ### Create local directories
 
@@ -135,11 +142,14 @@ python main.py --input input/call.mp3 --context work --num-speakers 3
 # Generate an AI analysis report after transcription
 python main.py --input input/call.mp3 --context work --report
 
-# Use fast transcription mode (coarser output, ~20% faster)
+# Use fast transcription mode (per-turn, 10-20x fewer Whisper calls than accurate)
 python main.py --input input/call.mp3 --transcription-mode fast
 
 # Replace generic speaker labels with real names
 python main.py --input input/call.mp3 --speaker-names "Alice,Bob"
+
+# Include per-word timestamps and probabilities in the JSON output
+python main.py --input input/call.mp3 --word-timestamps
 
 # Transcribe a non-English recording
 python main.py --input input/call.mp3 --language fr
@@ -152,7 +162,7 @@ python main.py --input output/call_clean.wav --skip-preprocess
 
 # Generate a report from an existing transcript JSON (skips Stages 1–4 entirely)
 python main.py --from-json output/call_20260327_143022.json
-python main.py --from-json output/call_20260327_143022.json --context work
+python main.py --from-json output/call_20260327_143022.json --context work --speaker-names "Alice,Bob"
 ```
 
 The startup banner shows settings and device info:
@@ -191,9 +201,9 @@ The completion banner shows a full run summary:
 | Mode | How it works | Speed | Output quality |
 |------|-------------|-------|----------------|
 | `accurate` (default) | One Whisper call per diarization segment | ~1x real-time on GTX 1650 | Fine-grained, sentence-level lines |
-| `fast` | One Whisper call for the full file | ~20% faster | Coarser — ~1 line per 30s chunk |
+| `fast` | Merges same-speaker segments into turns, one Whisper call per turn | 10-20x fewer calls than accurate | One line per speaker turn; speaker-accurate boundaries |
 
-For most use cases `accurate` is the right choice. `fast` is available for quick previews where exact line count doesn't matter.
+`accurate` is the right default for archival transcripts. `fast` is useful when you need a quick readable pass on a long recording — it still uses diarization for speaker attribution, just at turn granularity instead of segment granularity.
 
 ### Analysis report (Stage 5)
 
@@ -219,21 +229,13 @@ The faster-whisper `medium` model (~1.5 GB) downloads automatically on first run
 
 ### Known warnings
 
-You may see:
-```
-UserWarning: torchcodec is not installed correctly so built-in audio decoding will fail.
-```
-**Harmless** — audio is passed as a pre-loaded waveform so torchcodec is never used.
-
-### Known warnings
-
 You may see this on startup:
 
 ```
 UserWarning: torchcodec is not installed correctly so built-in audio decoding will fail.
 ```
 
-**This is harmless.** The pipeline passes audio to pyannote as a pre-loaded in-memory waveform (not via file path), so `torchcodec` is never used. The warning is suppressed in the code.
+**Harmless.** The pipeline passes audio to pyannote as a pre-loaded in-memory waveform, so `torchcodec` is never used. The warning is suppressed in the code.
 
 ## Project structure
 
