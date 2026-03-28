@@ -65,19 +65,33 @@ def _reidentify_speakers(
         print("[Stage 2] scikit-learn not installed — skipping speaker re-identification")
         return segments
 
-    # Locate the embedding model inside the pipeline
-    emb_model = getattr(pipeline, "_embedding", None) or getattr(pipeline, "embedding", None)
-    if emb_model is None:
+    # Navigate to the raw Inference object inside the pipeline.
+    #
+    # pipeline._embedding          → SpeakerEmbedding (a Pipeline subclass)
+    # pipeline._embedding._embedding → Inference (the actual model wrapper)
+    #
+    # We must use the Inference object directly rather than calling
+    # SpeakerEmbedding.__call__().  SpeakerEmbedding internally calls
+    # `file.to(device)` on the AudioFile dict — plain Python dicts have no
+    # .to() method, which causes the "'dict' object has no attribute 'to'"
+    # error.  Inference.__call__() moves only the *waveform tensor* inside
+    # the dict, so it works correctly with plain dicts.
+    emb_pipeline = getattr(pipeline, "_embedding", None) or getattr(pipeline, "embedding", None)
+    if emb_pipeline is None:
         print("[Stage 2] Embedding model not accessible on pipeline — skipping re-identification")
         return segments
 
-    # Determine which device the pipeline (and its embedding model) is on.
-    # The waveform was loaded on CPU; we must move each segment slice to
-    # the embedding model's device to avoid a runtime device mismatch error.
+    # One level deeper: the raw Inference object
+    inference = getattr(emb_pipeline, "_embedding", emb_pipeline)
+
+    # Determine the device from the underlying model weights
     try:
-        emb_device = torch.device(getattr(pipeline, "_device", "cpu"))
+        emb_device = next(inference.model.parameters()).device
     except Exception:
-        emb_device = torch.device("cpu")
+        try:
+            emb_device = torch.device(getattr(pipeline, "_device", "cpu"))
+        except Exception:
+            emb_device = torch.device("cpu")
 
     MIN_SEG_SECONDS = 0.5  # lower threshold — many pyannote segments are short
 
@@ -97,11 +111,13 @@ def _reidentify_speakers(
 
         start_frame = int(seg["start"] * sample_rate)
         end_frame = int(seg["end"] * sample_rate)
-        # Move slice to the same device as the embedding model
-        seg_wave = waveform[:, start_frame:end_frame].to(emb_device)
+        # Keep slice on CPU — Inference.__call__() moves the tensor to its
+        # device internally (unlike SpeakerEmbedding which tried to move
+        # the whole dict and failed on plain Python dicts).
+        seg_wave = waveform[:, start_frame:end_frame]
 
         try:
-            emb = emb_model({"waveform": seg_wave, "sample_rate": sample_rate})
+            emb = inference({"waveform": seg_wave, "sample_rate": sample_rate})
             # Handle SlidingWindowFeature (windowed output) — take the mean
             if hasattr(emb, "data"):
                 emb = emb.data.mean(axis=0)
