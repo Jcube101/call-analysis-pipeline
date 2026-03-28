@@ -215,8 +215,9 @@ Each prompt defines structured output sections and includes a speaker reliabilit
 |---------|----------------|
 | `friend` | Summary, mood/energy, main topics, highlights, concerns, conversation dynamics, recurring themes |
 | `work` | Executive summary, participants, decisions, action item table (what/owner/deadline), open questions, topics, risks, meeting effectiveness |
-| `interview` | Speaker ID inference, candidate overview, strengths/concerns with evidence, comms style, cultural fit, candidate questions, suggested follow-ups, recommendation |
+| `interview` | Speaker ID inference, candidate overview, strengths/concerns with evidence, comms style, cultural/motivational fit, candidate questions, suggested follow-ups, recommendation |
 | `date` | Vibe, conversation balance, common ground, differences, highlights, awkward moments, self-revelations, green/red flags, overall assessment |
+| `public_interview` | Speaker ID, context and stakes, key messages pushed, tough question handling, evasion patterns, credibility/consistency, memorable quotes, journalist performance, overall assessment |
 
 To generate a report on an already-processed transcript without re-running the pipeline:
 ```bash
