@@ -20,6 +20,7 @@ A local Python pipeline that processes a recorded voice call and produces a clea
 | `--transcription-mode MODE` | CLI / `.env` | `accurate` (default) or `fast` |
 | `--language LANG` | CLI / `.env` | BCP-47 language code, e.g. `en`, `fr`, `es` (default: `en`) |
 | `--speaker-names NAMES` | CLI / `.env` | Comma-separated real names to replace generic labels, e.g. `Alice,Bob` |
+| `--word-timestamps` | CLI / `WORD_TIMESTAMPS=true` | Include per-word start/end times and probabilities in JSON output |
 | `--dry-run` | CLI flag | Validate config and input without running any stage |
 | `--skip-preprocess` | CLI flag | Skip Stage 1; `--input` must be a clean 16 kHz mono WAV |
 | `--report` | CLI flag | Run Stage 5: generate an analysis report via Gemini API |
@@ -60,18 +61,29 @@ All outputs land in `output/`. Each run produces uniquely named transcript files
     "source_file": "call.m4a",
     "context": "friend",
     "num_speakers": 2,
-    "processed_at": "2026-03-27T14:30:22"
+    "processed_at": "2026-03-27T14:30:22",
+    "speaker_names": ["Alice", "Bob"]
   },
   "transcript": [
     {
       "start": 4.2,
       "end": 9.8,
       "speaker": "Speaker A",
-      "text": "Hey, how are you doing..."
+      "text": "Hey, how are you doing...",
+      "confidence": 0.91,
+      "words": [
+        {"word": "Hey,", "start": 4.2, "end": 4.5, "probability": 0.99}
+      ]
     }
   ]
 }
 ```
+
+- `speaker_names` in metadata: only present when `--speaker-names` was used
+- `confidence`: always present (0–1, duration-weighted `exp(avg_logprob)`)
+- `words`: only present when `--word-timestamps` was passed
+
+When `--from-json --speaker-names` is used, a `<stem>_named.json` is written alongside the original with updated speaker labels and `relabelled_at` added to metadata.
 
 ---
 
@@ -107,7 +119,7 @@ Can be skipped with `--skip-preprocess` when a clean WAV already exists.
 | Speaker count | Passed as `num_speakers` int (or `None` for auto-detection) |
 | GPU acceleration | Used automatically if `torch.cuda.is_available()` |
 | Output unwrapping | pyannote 3.x returns `DiarizeOutput`; `exclusive_speaker_diarization` attribute is the `Annotation` used for iteration |
-| Re-identification | Per-segment voice embeddings via `pipeline._embedding`; KMeans clustering (`n_clusters=num_speakers`) with L2-normalised embeddings; cluster IDs remapped to `SPEAKER_XX` in first-appearance order; segments <1 s inherit label from nearest long segment |
+| Re-identification | MFCC + delta features (librosa, 20 coefficients) per segment ≥0.5 s, mean-pooled over time; KMeans clustering (`n_clusters=num_speakers`) with L2-normalised feature vectors; cluster IDs remapped to `SPEAKER_XX` in first-appearance order; segments <0.5 s inherit the label of their nearest longer segment |
 | Label mapping | `SPEAKER_00` → `Speaker A`, `SPEAKER_01` → `Speaker B`, etc. (applied after re-identification) |
 
 **Output:** List of segment dicts:
@@ -146,11 +158,11 @@ Produces fine-grained sentence-level output. ~1x real-time on GTX 1650 for a 10-
 
 #### fast
 
-Same model and device setup, but transcribes the entire WAV in one call, then assigns each Whisper segment to a speaker via max-overlap with diarization windows. Consecutive same-speaker Whisper segments are merged. ~20% faster than accurate for long files, but produces fewer output lines (Whisper's ~30s internal chunking limits granularity).
+Same model and device setup. Merges consecutive same-speaker diarization segments into "turns" (gap ≤ 1 s), then makes one `model.transcribe()` call per turn. Produces one output segment per speaker turn — 10-20x fewer Whisper calls than accurate mode on long recordings, while preserving speaker-accurate boundaries (turns are built from diarization, not from Whisper's internal chunking).
 
 **CUDA teardown fix:** A module-level `_active_model` reference keeps the `WhisperModel` alive until process exit. Without it, ctranslate2's `__del__` calls `exit()` when the model is garbage-collected mid-process on Windows.
 
-**Output:** Segment list extended with `"text"` key per segment.
+**Output:** Segment list extended with `"text"`, `"confidence"`, and optionally `"words"` per segment.
 
 ---
 
@@ -161,9 +173,10 @@ Same model and device setup, but transcribes the entire WAV in one call, then as
 | Step | Implementation |
 |------|---------------|
 | Filename | `<source_stem>_<YYYYMMDD_HHMMSS>.txt/.json` — unique per run |
-| Metadata | Source file name, context tag, speaker count, ISO 8601 timestamp |
+| Metadata | Source file name, context tag, speaker count, ISO 8601 timestamp; `speaker_names` included if provided |
 | TXT | `[HH:MM:SS] Speaker X: "..."` per segment, with header comment block |
-| JSON | `{"metadata": {...}, "transcript": [...]}` with float timestamps rounded to 3 dp |
+| JSON | `{"metadata": {...}, "transcript": [...]}` with timestamps rounded to 3 dp; `confidence` always present; `words` present when `--word-timestamps` was passed |
+| Relabelling | `write_relabelled()` writes `<stem>_named.json` when `--from-json --speaker-names` is used |
 
 ---
 
@@ -200,6 +213,7 @@ Only runs when `--report` is passed. `GEMINI_API_KEY` is validated early (before
 | `transcription_mode` | `TRANSCRIPTION_MODE` | `--transcription-mode` | `"accurate"` |
 | `whisper_language` | `WHISPER_LANGUAGE` | `--language` | `"en"` |
 | `speaker_names` | `SPEAKER_NAMES` | `--speaker-names` | `[]` (generic) |
+| `word_timestamps` | `WORD_TIMESTAMPS` | `--word-timestamps` | `False` |
 
 ---
 
@@ -274,6 +288,6 @@ pip install -r requirements.txt
 
 ## Deferred / out of scope (current version)
 
-- Large file chunking (>160 MB audio)
 - Real-time / streaming processing
-- Web UI or REST API wrapper
+- Batch processing (`--input-dir`)
+- Docker packaging
