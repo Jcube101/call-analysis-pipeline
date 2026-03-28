@@ -139,7 +139,7 @@ This avoids a dependency on `torchcodec` (which is not installed). A `UserWarnin
 |----------|----------|-------------|
 | `HUGGINGFACE_TOKEN` | Yes | For pyannote diarization model download |
 | `GEMINI_API_KEY` | With `--report` | For Stage 5 report generation via Gemini API |
-| `CONVERSATION_CONTEXT` | No | `friend` / `work` / `interview` / `date` (default: `friend`) |
+| `CONVERSATION_CONTEXT` | No | `friend` / `work` / `interview` / `date` / `public_interview` (default: `friend`) |
 | `NUM_SPEAKERS` | No | Integer or blank for auto-detect (default: auto) |
 | `WHISPER_MODEL` | No | `tiny` / `base` / `small` / `medium` / `large` (default: `medium`) |
 | `TRANSCRIPTION_MODE` | No | `accurate` / `fast` (default: `accurate`) |

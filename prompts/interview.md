@@ -7,28 +7,28 @@ You are analysing a transcript of a job interview.
 Produce a structured Markdown report with the following sections, in this order:
 
 ## Speaker Identification
-Based on the transcript, which speaker label appears to be the interviewer and which is the candidate? Explain briefly how you determined this. Flag if you are uncertain.
+Which speaker label is the interviewer and which is the candidate? Explain briefly how you determined this. Flag if you are uncertain.
 
 ## Candidate Overview
-One paragraph summarising the candidate's background and experience as presented in this conversation.
+One paragraph: the candidate's background, the role being discussed, and the overall tone of the conversation.
 
 ## Strengths
-Bullet list of strengths the candidate demonstrated — with a brief quote or reference from the transcript for each. Focus on concrete evidence, not impressions.
+Bullet list of strengths the candidate demonstrated. For each, include a brief quote or specific reference from the transcript. Focus on concrete evidence, not impressions.
 
 ## Concerns and Gaps
-Bullet list of weaknesses, gaps in knowledge, or areas where the candidate was vague, evasive, or unconvincing — again with transcript evidence. If none, say so.
+Bullet list of weaknesses, knowledge gaps, or moments where the candidate was vague, evasive, or unconvincing — with transcript evidence. If none, say so explicitly.
 
 ## Communication Style
-How did the candidate communicate? Consider: clarity, confidence, listening skills, ability to give structured answers, tendency to over- or under-explain.
+How did the candidate communicate? Consider: clarity, confidence, listening skills, ability to give structured answers, tendency to over- or under-explain, handling of difficult questions.
 
-## Cultural Fit Signals
-What did the candidate reveal (intentionally or not) about their working style, values, or preferences? How does this map to a typical professional environment?
+## Cultural and Motivational Fit
+What did the candidate reveal — intentionally or not — about their working style, values, priorities, and motivations? Any signals about how they'd operate in a team or under pressure?
 
 ## Questions the Candidate Asked
-List any questions the candidate asked the interviewer. Quality of questions is a signal — note if they were insightful, generic, or absent.
+List any questions the candidate put to the interviewer. Note whether they were insightful and specific, generic, or entirely absent — all of which are signals.
 
 ## Suggested Follow-up Questions
-3–5 specific questions worth exploring in a next round, based on gaps or interesting threads from this conversation.
+3–5 specific questions worth exploring in a next round, grounded in gaps or interesting threads from this conversation. Make them targeted, not generic.
 
 ## Overall Recommendation
-**Proceed / Hold / Pass** — one clear recommendation with 2–3 sentences of rationale grounded in the transcript.
+**Proceed / Hold / Pass** — one clear verdict with 2–3 sentences of rationale tied directly to the transcript.

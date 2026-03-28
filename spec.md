@@ -14,7 +14,7 @@ A local Python pipeline that processes a recorded voice call and produces a clea
 |-----------|--------|-------------|
 | `--input FILE` | CLI arg | Path to source audio file (MP3, M4A, WAV, MPEG, or any ffmpeg-supported format). Required unless `--from-json` is used. |
 | `--from-json FILE` | CLI arg | Skip Stages 1–4; generate a Gemini report from an existing transcript JSON (implies `--report`) |
-| `--context CTX` | CLI / `.env` | Conversation type: `friend`, `work`, `interview`, `date` |
+| `--context CTX` | CLI / `.env` | Conversation type: `friend`, `work`, `interview`, `date`, `public_interview` |
 | `--num-speakers N` | CLI / `.env` | Integer speaker count, or omit for auto-detection |
 | `--whisper-model SIZE` | CLI / `.env` | Whisper model size: `tiny`, `base`, `small`, `medium` (default), `large` |
 | `--transcription-mode MODE` | CLI / `.env` | `accurate` (default) or `fast` |
