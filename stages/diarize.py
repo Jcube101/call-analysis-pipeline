@@ -71,37 +71,61 @@ def _reidentify_speakers(
         print("[Stage 2] Embedding model not accessible on pipeline — skipping re-identification")
         return segments
 
-    MIN_SEG_SECONDS = 1.0
+    # Determine which device the pipeline (and its embedding model) is on.
+    # The waveform was loaded on CPU; we must move each segment slice to
+    # the embedding model's device to avoid a runtime device mismatch error.
+    try:
+        emb_device = torch.device(getattr(pipeline, "_device", "cpu"))
+    except Exception:
+        emb_device = torch.device("cpu")
+
+    MIN_SEG_SECONDS = 0.5  # lower threshold — many pyannote segments are short
 
     embeddings: list[np.ndarray] = []
     long_indices: list[int] = []  # segments long enough to embed
+    n_short = 0
+    n_failed = 0
+    first_error: str = ""
 
     print(f"[Stage 2] Extracting voice embeddings ({len(segments)} segments, ≥{MIN_SEG_SECONDS}s only)...")
 
     for i, seg in enumerate(tqdm(segments, desc="  Embeddings", unit="seg")):
         duration = seg["end"] - seg["start"]
         if duration < MIN_SEG_SECONDS:
+            n_short += 1
             continue
 
         start_frame = int(seg["start"] * sample_rate)
         end_frame = int(seg["end"] * sample_rate)
-        seg_wave = waveform[:, start_frame:end_frame]
+        # Move slice to the same device as the embedding model
+        seg_wave = waveform[:, start_frame:end_frame].to(emb_device)
 
         try:
             emb = emb_model({"waveform": seg_wave, "sample_rate": sample_rate})
+            # Handle SlidingWindowFeature (windowed output) — take the mean
+            if hasattr(emb, "data"):
+                emb = emb.data.mean(axis=0)
             # Normalise to numpy regardless of whether we got tensor or array
             if hasattr(emb, "detach"):
                 emb = emb.detach().cpu().numpy()
             emb = np.asarray(emb).flatten()
+            if emb.size == 0:
+                raise ValueError("Empty embedding returned")
             embeddings.append(emb)
             long_indices.append(i)
-        except Exception:
+        except Exception as exc:
+            n_failed += 1
+            if not first_error:
+                first_error = str(exc)
             continue  # skip segments whose embedding fails
+
+    if n_failed > 0:
+        print(f"[Stage 2] {n_failed} segment(s) failed embedding extraction (first error: {first_error})")
 
     if len(embeddings) < num_speakers:
         print(
             f"[Stage 2] Only {len(embeddings)} usable embeddings for {num_speakers} speakers "
-            f"— skipping re-identification"
+            f"(filtered short: {n_short}, failed: {n_failed}) — skipping re-identification"
         )
         return segments
 
