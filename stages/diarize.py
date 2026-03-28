@@ -37,25 +37,30 @@ def _reidentify_speakers(
     segments: list[dict],
     waveform: "torch.Tensor",
     sample_rate: int,
-    pipeline: Pipeline,
     num_speakers: int,
 ) -> list[dict]:
     """
-    Re-assign speaker labels using voice embeddings + KMeans clustering.
+    Re-assign speaker labels using MFCC features + KMeans clustering.
 
     pyannote processes long audio in chunks and can flip speaker labels between
     chunks (e.g. the same physical voice becomes SPEAKER_00 in the first half
-    and SPEAKER_01 in the second half). This function extracts one embedding
-    per segment, clusters globally, then reassigns labels in first-appearance
-    order so the same voice always maps to the same label.
+    and SPEAKER_01 in the second half). This function computes MFCC + delta
+    features per segment, clusters them globally, then reassigns labels in
+    first-appearance order so the same voice always maps to the same label.
 
-    Segments shorter than MIN_SEG_SECONDS are skipped during embedding
-    extraction and inherit their label from the nearest long segment.
+    MFCC features (via librosa, already a pipeline dependency) are used instead
+    of pyannote's internal embedding model because pyannote's SpeakerEmbedding
+    pipeline calls .to(device) on the AudioFile dict, which fails for plain
+    Python dicts.  MFCC features are sufficient to distinguish speakers
+    reliably on two-speaker call recordings.
+
+    Segments shorter than MIN_SEG_SECONDS are skipped during feature extraction
+    and inherit their label from the nearest longer segment.
 
     Returns the modified segment list, or the original list unchanged if
     re-identification fails for any reason.
     """
-    import torch
+    import librosa
     from tqdm import tqdm
 
     try:
@@ -65,87 +70,55 @@ def _reidentify_speakers(
         print("[Stage 2] scikit-learn not installed — skipping speaker re-identification")
         return segments
 
-    # Navigate to the raw Inference object inside the pipeline.
-    #
-    # pipeline._embedding          → SpeakerEmbedding (a Pipeline subclass)
-    # pipeline._embedding._embedding → Inference (the actual model wrapper)
-    #
-    # We must use the Inference object directly rather than calling
-    # SpeakerEmbedding.__call__().  SpeakerEmbedding internally calls
-    # `file.to(device)` on the AudioFile dict — plain Python dicts have no
-    # .to() method, which causes the "'dict' object has no attribute 'to'"
-    # error.  Inference.__call__() moves only the *waveform tensor* inside
-    # the dict, so it works correctly with plain dicts.
-    emb_pipeline = getattr(pipeline, "_embedding", None) or getattr(pipeline, "embedding", None)
-    if emb_pipeline is None:
-        print("[Stage 2] Embedding model not accessible on pipeline — skipping re-identification")
-        return segments
+    MIN_SEG_SECONDS = 0.5
+    N_MFCC = 20
 
-    # One level deeper: the raw Inference object
-    inference = getattr(emb_pipeline, "_embedding", emb_pipeline)
-
-    # Determine the device from the underlying model weights
-    try:
-        emb_device = next(inference.model.parameters()).device
-    except Exception:
-        try:
-            emb_device = torch.device(getattr(pipeline, "_device", "cpu"))
-        except Exception:
-            emb_device = torch.device("cpu")
-
-    MIN_SEG_SECONDS = 0.5  # lower threshold — many pyannote segments are short
+    # Convert waveform to a mono float32 numpy array for librosa.
+    # waveform shape is (channels, samples); take channel 0.
+    audio_np = waveform[0].numpy().astype(np.float32)
 
     embeddings: list[np.ndarray] = []
-    long_indices: list[int] = []  # segments long enough to embed
+    long_indices: list[int] = []
     n_short = 0
     n_failed = 0
     first_error: str = ""
 
-    print(f"[Stage 2] Extracting voice embeddings ({len(segments)} segments, ≥{MIN_SEG_SECONDS}s only)...")
+    print(f"[Stage 2] Extracting MFCC features ({len(segments)} segments, ≥{MIN_SEG_SECONDS}s only)...")
 
-    for i, seg in enumerate(tqdm(segments, desc="  Embeddings", unit="seg")):
+    for i, seg in enumerate(tqdm(segments, desc="  Features", unit="seg")):
         duration = seg["end"] - seg["start"]
         if duration < MIN_SEG_SECONDS:
             n_short += 1
             continue
 
-        start_frame = int(seg["start"] * sample_rate)
-        end_frame = int(seg["end"] * sample_rate)
-        # Keep slice on CPU — Inference.__call__() moves the tensor to its
-        # device internally (unlike SpeakerEmbedding which tried to move
-        # the whole dict and failed on plain Python dicts).
-        seg_wave = waveform[:, start_frame:end_frame]
+        start_sample = int(seg["start"] * sample_rate)
+        end_sample = int(seg["end"] * sample_rate)
+        seg_audio = audio_np[start_sample:end_sample]
 
         try:
-            emb = inference({"waveform": seg_wave, "sample_rate": sample_rate})
-            # Handle SlidingWindowFeature (windowed output) — take the mean
-            if hasattr(emb, "data"):
-                emb = emb.data.mean(axis=0)
-            # Normalise to numpy regardless of whether we got tensor or array
-            if hasattr(emb, "detach"):
-                emb = emb.detach().cpu().numpy()
-            emb = np.asarray(emb).flatten()
-            if emb.size == 0:
-                raise ValueError("Empty embedding returned")
-            embeddings.append(emb)
+            mfcc = librosa.feature.mfcc(y=seg_audio, sr=sample_rate, n_mfcc=N_MFCC)
+            delta = librosa.feature.delta(mfcc)
+            # Mean-pool over time → fixed-size feature vector (2 * N_MFCC,)
+            feat = np.concatenate([mfcc.mean(axis=1), delta.mean(axis=1)])
+            embeddings.append(feat)
             long_indices.append(i)
         except Exception as exc:
             n_failed += 1
             if not first_error:
                 first_error = str(exc)
-            continue  # skip segments whose embedding fails
+            continue
 
     if n_failed > 0:
-        print(f"[Stage 2] {n_failed} segment(s) failed embedding extraction (first error: {first_error})")
+        print(f"[Stage 2] {n_failed} segment(s) failed feature extraction (first error: {first_error})")
 
     if len(embeddings) < num_speakers:
         print(
-            f"[Stage 2] Only {len(embeddings)} usable embeddings for {num_speakers} speakers "
+            f"[Stage 2] Only {len(embeddings)} usable features for {num_speakers} speakers "
             f"(filtered short: {n_short}, failed: {n_failed}) — skipping re-identification"
         )
         return segments
 
-    # Cluster embeddings globally
+    # Cluster globally
     emb_matrix = normalize(np.array(embeddings))
     kmeans = KMeans(n_clusters=num_speakers, n_init=10, random_state=42)
     cluster_ids = kmeans.fit_predict(emb_matrix)
@@ -163,7 +136,7 @@ def _reidentify_speakers(
     for seg_idx, cid in zip(long_indices, cluster_ids):
         segments[seg_idx]["label"] = cluster_to_label[cid]
 
-    # Short segments inherit label from their nearest long segment (by midpoint)
+    # Short segments inherit the label of their nearest long segment (by midpoint)
     for i, seg in enumerate(segments):
         if i in long_set:
             continue
@@ -262,7 +235,7 @@ def run(
     # Re-identify speakers globally — must happen before we free the waveform
     num_spk = num_speakers or len(set(s["label"] for s in raw_segments))
     try:
-        raw_segments = _reidentify_speakers(raw_segments, waveform, sample_rate, pipeline, num_spk)
+        raw_segments = _reidentify_speakers(raw_segments, waveform, sample_rate, num_spk)
     except Exception as e:
         print(f"[Stage 2] Speaker re-identification failed ({e}) — using pyannote labels as-is")
 
