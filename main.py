@@ -9,9 +9,12 @@ Usage:
     python main.py --input input/call.mp3 --dry-run
     python main.py --input input/call_clean.wav --skip-preprocess
     python main.py --input input/call.mp3 --report
+    python main.py --from-json output/call_20260328_151811.json
+    python main.py --from-json output/call_20260328_151811.json --context work
 """
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -69,9 +72,16 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--input",
-        required=True,
+        required=False,
         metavar="FILE",
         help="Path to the input audio file (MP3, WAV, M4A, …)",
+    )
+    parser.add_argument(
+        "--from-json",
+        metavar="FILE",
+        default=None,
+        dest="from_json",
+        help="Skip Stages 1–4 and generate a report from an existing transcript JSON (implies --report)",
     )
     parser.add_argument(
         "--context",
@@ -132,9 +142,111 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _load_json_transcript(json_path: str) -> tuple[list[dict], dict]:
+    """Load segments and metadata from an existing transcript JSON."""
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    metadata = data.get("metadata", {})
+    segments = data.get("transcript", [])
+    if not segments:
+        print(f"[error] No transcript segments found in {json_path}")
+        sys.exit(1)
+    return segments, metadata
+
+
 def main() -> None:
     _check_ffmpeg()
     args = _parse_args()
+
+    # Validate: need either --input or --from-json
+    if not args.input and not args.from_json:
+        print("[error] --input or --from-json is required")
+        sys.exit(1)
+
+    if args.from_json and args.input:
+        print("[error] --input and --from-json are mutually exclusive")
+        sys.exit(1)
+
+    output_dir = "output"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # ------------------------------------------------------------------ #
+    # --from-json mode: load existing transcript, run Stage 5 only        #
+    # ------------------------------------------------------------------ #
+    if args.from_json:
+        if not os.path.isfile(args.from_json):
+            print(f"[error] JSON file not found: {args.from_json}")
+            sys.exit(1)
+
+        transcribed_segments, json_meta = _load_json_transcript(args.from_json)
+
+        # Apply context/num-speakers from JSON metadata, then CLI overrides
+        json_context = json_meta.get("context", "friend")
+        json_num_speakers = json_meta.get("num_speakers")
+        json_source_file = json_meta.get("source_file", os.path.basename(args.from_json))
+
+        settings.override(
+            context=args.context or json_context,
+            num_speakers=args.num_speakers or json_num_speakers,
+        )
+
+        try:
+            settings.validate_for_report()
+        except EnvironmentError as e:
+            print(f"\n[error] {e}")
+            sys.exit(1)
+
+        speaker_counts = Counter(s["speaker"] for s in transcribed_segments)
+        audio_duration = max((s["end"] for s in transcribed_segments), default=None)
+
+        print("=" * 60)
+        print("  Call Analysis Pipeline — Report only (--from-json)")
+        print(f"  JSON:     {args.from_json}")
+        print(f"  Source:   {json_source_file}")
+        print(f"  Context:  {settings.context}")
+        print(f"  Speakers: {len(speaker_counts)}")
+        print(f"  Segments: {len(transcribed_segments)}")
+        if audio_duration:
+            print(f"  Duration: {_fmt_duration(audio_duration)}")
+        print("=" * 60)
+
+        total_start = time.time()
+        try:
+            report_path = report.run(
+                segments=transcribed_segments,
+                source_file=json_source_file,
+                output_dir=output_dir,
+                context=settings.context,
+                num_speakers=len(speaker_counts),
+                audio_duration=audio_duration,
+                speaker_counts=dict(speaker_counts),
+                api_key=settings.gemini_api_key,
+                prompts_dir="prompts",
+            )
+        except Exception as e:
+            print(f"\n[error] Stage 5 (report) failed: {e}")
+            sys.exit(1)
+
+        elapsed = time.time() - total_start
+
+        print("\n--- Report preview ---")
+        with open(report_path, encoding="utf-8") as f:
+            preview_lines = f.readlines()
+        print("".join(preview_lines[:20]).rstrip())
+        if len(preview_lines) > 20:
+            print(f"  ... ({len(preview_lines) - 20} more lines in {report_path})")
+        print("----------------------")
+
+        print("\n" + "=" * 60)
+        print("  Report complete!")
+        print(f"  Report:   {report_path}")
+        print(f"  Elapsed:  {_fmt_duration(elapsed)}")
+        print("=" * 60)
+        return
+
+    # ------------------------------------------------------------------ #
+    # Normal mode: full pipeline (Stages 1–4, optionally Stage 5)         #
+    # ------------------------------------------------------------------ #
 
     # Validate input file
     if not os.path.isfile(args.input):
@@ -154,9 +266,6 @@ def main() -> None:
     )
     if args.whisper_model:
         settings.whisper_model = args.whisper_model
-
-    output_dir = "output"
-    os.makedirs(output_dir, exist_ok=True)
 
     print("=" * 60)
     print("  Call Analysis Pipeline")
@@ -250,7 +359,7 @@ def main() -> None:
         sys.exit(1)
     stage_times["Stage 4"] = time.time() - t
 
-    # Compute speaker stats now — needed by both summary and Stage 5
+    # Compute speaker stats — needed by both summary and Stage 5
     speaker_counts = Counter(s["speaker"] for s in transcribed_segments)
 
     # Read duration from WAV header only — avoids loading the full audio into RAM
