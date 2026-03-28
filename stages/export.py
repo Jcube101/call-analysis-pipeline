@@ -49,16 +49,18 @@ def run(
     output_dir: str,
     context: str = "friend",
     num_speakers: Optional[int] = None,
+    speaker_names: Optional[list] = None,
 ) -> tuple[str, str]:
     """
     Run Stage 4.
 
     Args:
-        segments:     Enriched segments from Stage 3 (each has start/end/speaker/text).
-        source_file:  Original input filename (used in metadata only).
-        output_dir:   Directory where outputs are written.
-        context:      Conversation context tag.
-        num_speakers: Speaker count (may be None if auto-detected).
+        segments:      Enriched segments from Stage 3 (each has start/end/speaker/text).
+        source_file:   Original input filename (used in metadata only).
+        output_dir:    Directory where outputs are written.
+        context:       Conversation context tag.
+        num_speakers:  Speaker count (may be None if auto-detected).
+        speaker_names: Real names used for speaker labels, if provided.
 
     Returns:
         (txt_path, json_path) — absolute paths to the two output files.
@@ -69,12 +71,14 @@ def run(
     if num_speakers is None:
         num_speakers = len(set(s["speaker"] for s in segments))
 
-    metadata = {
+    metadata: dict = {
         "source_file": os.path.basename(source_file),
         "context": context,
         "num_speakers": num_speakers,
         "processed_at": datetime.now().isoformat(timespec="seconds"),
     }
+    if speaker_names:
+        metadata["speaker_names"] = speaker_names
 
     # Build a filename stem: <source_basename>_<YYYYMMDD_HHMMSS>
     source_stem = os.path.splitext(os.path.basename(source_file))[0]
@@ -117,3 +121,54 @@ def run(
     print(f"[Stage 4] JSON transcript saved:  {json_path}")
 
     return txt_path, json_path
+
+
+def write_relabelled(
+    source_json_path: str,
+    segments: list[dict],
+    original_metadata: dict,
+    speaker_names: list,
+    output_dir: str,
+) -> str:
+    """
+    Write a new JSON file with updated speaker labels and name mapping recorded.
+
+    Used by --from-json mode when --speaker-names is supplied.  The original
+    JSON is left untouched; a new file is written alongside it with a _named
+    suffix so both versions are preserved.
+
+    Args:
+        source_json_path:  Path of the JSON that was loaded (used to derive filename).
+        segments:          Transcript segments with speaker labels already replaced.
+        original_metadata: Metadata dict from the source JSON (copied and updated).
+        speaker_names:     The real names that were applied.
+        output_dir:        Directory where the new file is written.
+
+    Returns:
+        Path to the new JSON file.
+    """
+    stem = os.path.splitext(os.path.basename(source_json_path))[0]
+    out_path = os.path.join(output_dir, f"{stem}_named.json")
+
+    metadata = dict(original_metadata)
+    metadata["speaker_names"] = speaker_names
+    metadata["relabelled_at"] = datetime.now().isoformat(timespec="seconds")
+
+    payload = {
+        "metadata": metadata,
+        "transcript": [
+            {
+                "start": round(seg["start"], 3),
+                "end": round(seg["end"], 3),
+                "speaker": seg["speaker"],
+                "text": seg["text"],
+            }
+            for seg in segments
+        ],
+    }
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    print(f"[--from-json] Relabelled JSON saved: {out_path}")
+    return out_path

@@ -220,8 +220,16 @@ def main() -> None:
             speaker_names=parsed_names,
         )
 
+        relabelled_json_path = None
         if settings.speaker_names:
             transcribed_segments = _apply_speaker_names(transcribed_segments, settings.speaker_names)
+            relabelled_json_path = export.write_relabelled(
+                source_json_path=args.from_json,
+                segments=transcribed_segments,
+                original_metadata=json_meta,
+                speaker_names=settings.speaker_names,
+                output_dir=output_dir,
+            )
 
         try:
             settings.validate_for_report()
@@ -274,6 +282,8 @@ def main() -> None:
 
         print("\n" + "=" * 60)
         print("  Report complete!")
+        if relabelled_json_path:
+            print(f"  JSON:     {relabelled_json_path}")
         print(f"  Report:   {report_path}")
         print(f"  Elapsed:  {_fmt_duration(elapsed)}")
         print("=" * 60)
@@ -401,6 +411,7 @@ def main() -> None:
             output_dir=output_dir,
             context=settings.context,
             num_speakers=settings.num_speakers,
+            speaker_names=settings.speaker_names or None,
         )
     except Exception as e:
         print(f"\n[error] Stage 4 (export) failed: {e}")
