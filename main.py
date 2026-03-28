@@ -253,9 +253,11 @@ def main() -> None:
     # Compute speaker stats now — needed by both summary and Stage 5
     speaker_counts = Counter(s["speaker"] for s in transcribed_segments)
 
+    # Read duration from WAV header only — avoids loading the full audio into RAM
     try:
-        from pydub import AudioSegment as _AS
-        audio_duration = len(_AS.from_wav(clean_wav)) / 1000.0
+        import soundfile as _sf
+        _info = _sf.info(clean_wav)
+        audio_duration = _info.frames / _info.samplerate
     except Exception:
         audio_duration = None
 

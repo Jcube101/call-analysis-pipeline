@@ -10,6 +10,7 @@ Steps:
 
 from __future__ import annotations
 
+import gc
 import os
 import warnings
 from typing import Optional
@@ -18,8 +19,6 @@ import numpy as np
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message="torchcodec is not installed", category=UserWarning)
     from pyannote.audio import Pipeline
-from pydub import AudioSegment
-from pydub.effects import normalize
 
 from config import settings
 
@@ -30,34 +29,6 @@ def _label_map(raw_labels: list[str]) -> dict[str, str]:
     sorted_labels = sorted(set(raw_labels))
     letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     return {label: f"Speaker {letters[i]}" for i, label in enumerate(sorted_labels)}
-
-
-def _normalize_speaker_segments(
-    audio: AudioSegment, segments: list[dict]
-) -> dict[str, AudioSegment]:
-    """
-    Extract each speaker's audio, normalize loudness independently, return
-    a dict mapping speaker_label → normalized AudioSegment.
-
-    This ensures a quiet speaker is brought to the same perceived volume as a
-    louder one before transcription.
-    """
-    from collections import defaultdict
-
-    speaker_chunks: dict[str, list[AudioSegment]] = defaultdict(list)
-    for seg in segments:
-        start_ms = int(seg["start"] * 1000)
-        end_ms = int(seg["end"] * 1000)
-        chunk = audio[start_ms:end_ms]
-        if len(chunk) > 0:
-            speaker_chunks[seg["speaker"]].append(chunk)
-
-    normalized: dict[str, AudioSegment] = {}
-    for speaker, chunks in speaker_chunks.items():
-        combined = sum(chunks, AudioSegment.empty())
-        normalized[speaker] = normalize(combined)
-
-    return normalized
 
 
 def run(
@@ -116,7 +87,12 @@ def run(
     audio_input = {"waveform": waveform, "sample_rate": sample_rate}
     diarization = pipeline(audio_input, **diarize_kwargs)
 
-    # Resolve the annotation object — pyannote 3.x wraps results in DiarizeOutput
+    # Free the waveform tensors — pyannote is done with them and they can be
+    # several hundred MB for long recordings
+    del data, waveform, audio_input
+    gc.collect()
+
+    # Collect raw segments — handle different pyannote output types across versions
     if hasattr(diarization, "itertracks"):
         annotation = diarization
     elif hasattr(diarization, "exclusive_speaker_diarization"):
@@ -150,11 +126,5 @@ def run(
         f"[Stage 2] Found {len(set(s['speaker'] for s in raw_segments))} speaker(s), "
         f"{len(raw_segments)} segments"
     )
-
-    # Per-speaker volume normalization (informational — the normalized audio
-    # isn't re-exported here, but segment boundaries are accurate for Whisper)
-    audio = AudioSegment.from_wav(clean_wav_path)
-    _normalize_speaker_segments(audio, raw_segments)
-    print("[Stage 2] Per-speaker loudness normalization complete.")
 
     return raw_segments
