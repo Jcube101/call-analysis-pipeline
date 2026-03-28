@@ -37,9 +37,9 @@ The core pipeline is functional end-to-end and has been validated on a real M4A 
 
 ---
 
-## v0.3 — in progress
+## v0.3 — complete
 
-Priority order: Stage 5 (Gemini report) ✓ → large file support → UI wrapper.
+Priority order: Stage 5 (Gemini report) ✓ → large file support ✓ → UI wrapper (deferred to v1.0).
 
 ### Stage 5 — Analysis Report (Gemini API) — complete
 
@@ -52,15 +52,17 @@ Priority order: Stage 5 (Gemini report) ✓ → large file support → UI wrappe
 - [x] `GEMINI_API_KEY` validated early when `--report` is passed
 - [x] **Real-world test** — validated on First_Test_File (work context) with `gemini-3-flash-preview`
 
-### Large file support
+### Large file support — complete
 
-- [ ] **Audio chunking** for files >160 MB — split into overlapping chunks, transcribe independently, stitch with speaker continuity preserved
-- [ ] Progress reporting per chunk
+- [x] **Chunked noise reduction** — Stage 1 processes 60s slices with 0.5s overlap; peak RAM ~350 MB regardless of file length (was 3–4 GB for 90+ min files)
+- [x] **Memory freed between stages** — waveform tensors deleted after pyannote; dead normalization code removed from Stage 2
+- [x] **Duration via header only** — `soundfile.info()` replaces full pydub WAV load in summary
+- [x] **Progress bar** for noise reduction chunks
+- [x] **Real-world test** — validated on 2h40m M4A (9756s, 163 noise-reduction chunks, 3102 diarization segments, 1819 transcript segments); total elapsed 2h43m on GTX 1650
 
-### UI wrapper
+### UI wrapper — deferred to v1.0
 
-- [ ] Local web UI (FastAPI + minimal HTML) so the pipeline can be triggered via a browser without using the terminal
-- [ ] File upload, progress display, download links for outputs
+Moved to v1.0 — terminal workflow is sufficient for current use.
 
 ---
 
