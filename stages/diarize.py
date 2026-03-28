@@ -127,4 +127,15 @@ def run(
         f"{len(raw_segments)} segments"
     )
 
+    # Release the pyannote model from VRAM before Stage 3 loads Whisper.
+    # Without this, both models sit in VRAM simultaneously (~3.7/4.0 GB on GTX 1650).
+    # Moving to CPU + clearing the cache drops Stage 3 VRAM usage by ~1-1.5 GB.
+    try:
+        pipeline.to(torch.device("cpu"))
+        del pipeline, diarization, annotation
+        torch.cuda.empty_cache()
+        gc.collect()
+    except Exception:
+        pass  # non-critical — pipeline will be GC'd eventually regardless
+
     return raw_segments
