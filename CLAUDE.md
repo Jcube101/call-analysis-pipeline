@@ -27,6 +27,8 @@ python main.py --input input/call.mp3 --context work --report
 # Utility flags:
 python main.py --input input/call.mp3 --dry-run
 python main.py --input output/call_clean.wav --skip-preprocess
+# Generate a report from an existing JSON (skips Stages 1–4):
+python main.py --from-json output/call_20260328_151811.json --context work
 ```
 
 All config (tokens, context, speaker count, transcription mode, language) lives in `.env`. See `.env.example`.
@@ -92,7 +94,7 @@ Two modes selectable via `TRANSCRIPTION_MODE` env var or `--transcription-mode` 
 
 Stage 5 is optional and only runs when `--report` is passed. It sends the transcript to `gemini-3-flash-preview` via the `google-genai` SDK.
 
-- Prompt loaded from `prompts/<context>.md` — user can edit these freely
+- Prompt loaded from `prompts/<context>.md` — user can edit these freely. Each prompt defines specific structured output sections and embeds a speaker label reliability warning.
 - Falls back to built-in defaults if the prompt file is missing
 - Large transcripts (>500k chars) are chunked and partial reports synthesised
 - Output: `output/<name>_<timestamp>_report.md`
