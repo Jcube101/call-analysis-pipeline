@@ -140,6 +140,13 @@ def _parse_args() -> argparse.Namespace:
         help="Comma-separated real names to replace generic labels, e.g. \"Alice,Bob\"",
     )
     parser.add_argument(
+        "--word-timestamps",
+        action="store_true",
+        default=False,
+        dest="word_timestamps",
+        help="Include per-word start/end times and probabilities in JSON output (~10-15%% overhead)",
+    )
+    parser.add_argument(
         "--report",
         action="store_true",
         default=False,
@@ -315,6 +322,7 @@ def main() -> None:
         transcription_mode=args.transcription_mode,
         language=args.language,
         speaker_names=parsed_names,
+        word_timestamps=True if args.word_timestamps else None,
     )
     if args.whisper_model:
         settings.whisper_model = args.whisper_model
@@ -329,6 +337,8 @@ def main() -> None:
     print(f"  Whisper:  {settings.whisper_model}")
     print(f"  Tx Mode:  {settings.transcription_mode}")
     print(f"  Language: {settings.whisper_language}")
+    if settings.word_timestamps:
+        print(f"  Words:    ON (per-word timestamps in JSON)")
     if args.skip_preprocess:
         print(f"  Stage 1:  SKIPPED (using input as clean WAV)")
     if args.report:
@@ -396,6 +406,7 @@ def main() -> None:
             segments=segments,
             model_size=settings.whisper_model,
             mode=settings.transcription_mode,
+            word_timestamps=settings.word_timestamps,
         )
     except Exception as e:
         print(f"\n[error] Stage 3 (transcription) failed: {e}")

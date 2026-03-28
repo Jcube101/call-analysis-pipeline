@@ -77,11 +77,11 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 
 ### Quality improvements
 
-- [x] **Speaker re-identification** — per-segment voice embeddings via `pipeline._embedding`; KMeans clustering with L2-normalised embeddings; cluster IDs remapped to globally consistent `SPEAKER_XX` labels in first-appearance order. Fixes label-flipping on long recordings. Short segments (<1 s) inherit the nearest long segment's label.
-- [x] **Speaker name mapping** — `--speaker-names "Alice,Bob"` (or `SPEAKER_NAMES=Alice,Bob` in `.env`) replaces `Speaker A/B` with real names in transcript and report output.
-- [ ] **Whisper word-level timestamps** — `word_timestamps=True` for finer-grained JSON
-- [ ] **Confidence scores** — include Whisper segment-level log-probability in JSON
-- [ ] **Smarter fast mode** — merge same-speaker diarization turns, transcribe per turn; fewer Whisper calls than accurate, better granularity than current fast
+- [x] **Speaker re-identification** — MFCC + delta features (librosa) per segment; KMeans clustering; cluster IDs remapped to globally consistent `SPEAKER_XX` labels in first-appearance order. Fixes label-flipping on long recordings.
+- [x] **Speaker name mapping** — `--speaker-names "Alice,Bob"` (or `SPEAKER_NAMES=Alice,Bob` in `.env`) replaces `Speaker A/B` with real names in transcript and report output. `--from-json --speaker-names` writes a `_named.json` alongside the original.
+- [x] **Confidence scores** — segment-level 0–1 score (duration-weighted `exp(avg_logprob)`) included in every JSON segment.
+- [x] **Word-level timestamps** — `--word-timestamps` (or `WORD_TIMESTAMPS=true`) adds a `words` list to each JSON segment with per-word start/end times and probability scores (~10-15% overhead).
+- [x] **Smarter fast mode** — merges consecutive same-speaker diarization segments into turns (gap ≤ 1s), transcribes one turn at a time; 10-20x fewer Whisper calls than accurate on long recordings while preserving speaker-accurate boundaries.
 
 ### Usability
 

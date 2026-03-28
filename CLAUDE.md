@@ -58,7 +58,7 @@ output/          — pipeline outputs land here (gitignored, must exist locally)
 
 - **All secrets and config come from `.env`** — nothing hardcoded. Config is accessed via the `settings` singleton in `config.py`.
 - **Each stage is a module** with a single `run()` function. `main.py` calls them in order and passes the output of one stage as input to the next.
-- **Segment dicts** are the internal data structure passed between stages. Each is a dict with keys `start`, `end`, `speaker`, `label` (and `text` after Stage 3).
+- **Segment dicts** are the internal data structure passed between stages. Each is a dict with keys `start`, `end`, `speaker`, `label` (and `text`, `confidence`, optionally `words` after Stage 3).
 - **Windows compatibility** — avoid Unix-only shell commands or hardcoded `/` paths; use `os.path` instead.
 - **No chunking yet** — large file support is deferred, but don't architect it out. Keep it in mind when touching Stage 1 or 3.
 - **Error handling** — each stage call in `main.py` is wrapped in try/except. Failures print `[error] Stage N (name) failed: <message>` and exit with code 1.
@@ -87,9 +87,9 @@ Transcription uses **faster-whisper** (CTranslate2-based) instead of openai-whis
 Two modes selectable via `TRANSCRIPTION_MODE` env var or `--transcription-mode` CLI flag:
 
 - **accurate** (default): one `model.transcribe()` call per diarization segment. Produces fine-grained sentence-level output. ~1x real-time on GTX 1650.
-- **fast**: one `model.transcribe()` call on the full WAV, then speaker assignment via max-overlap with diarization windows. ~20% faster but produces far fewer lines — Whisper's internal ~30s chunking limits granularity to ~4 segments for a 2-min file. Only use when coarse output is acceptable.
+- **fast**: merges consecutive same-speaker diarization segments into "turns" (gap ≤ 1s), then one `model.transcribe()` call per turn. Produces one output line per speaker turn — 10-20x fewer Whisper calls than accurate on long recordings while preserving speaker-accurate boundaries.
 
-**Do not** pre-merge diarization segments before transcription. pyannote commonly outputs many same-speaker segments with tiny gaps (<100ms) between them — any gap threshold collapses entire speaking turns into one line.
+**Do not** pre-merge diarization segments before transcription **in accurate mode**. pyannote commonly outputs many same-speaker segments with tiny gaps (<100ms) between them — merging them collapses entire speaking turns into one line. Fast mode intentionally merges into turns as that is its design goal.
 
 ## Stage 5 — Gemini report
 
@@ -145,6 +145,7 @@ This avoids a dependency on `torchcodec` (which is not installed). A `UserWarnin
 | `TRANSCRIPTION_MODE` | No | `accurate` / `fast` (default: `accurate`) |
 | `WHISPER_LANGUAGE` | No | BCP-47 language code, e.g. `en`, `fr`, `es` (default: `en`) |
 | `SPEAKER_NAMES` | No | Comma-separated real names, e.g. `Alice,Bob` (default: generic labels) |
+| `WORD_TIMESTAMPS` | No | `true` / `1` to include per-word timestamps in JSON (~10-15% overhead) |
 
 ## Dependencies and install order
 
