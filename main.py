@@ -133,6 +133,13 @@ def _parse_args() -> argparse.Namespace:
         help="Skip Stage 1 — input must already be a clean 16 kHz mono WAV",
     )
     parser.add_argument(
+        "--speaker-names",
+        metavar="NAMES",
+        default=None,
+        dest="speaker_names",
+        help="Comma-separated real names to replace generic labels, e.g. \"Alice,Bob\"",
+    )
+    parser.add_argument(
         "--report",
         action="store_true",
         default=False,
@@ -140,6 +147,24 @@ def _parse_args() -> argparse.Namespace:
         help="Run Stage 5: generate an analysis report via the Gemini API (requires GEMINI_API_KEY)",
     )
     return parser.parse_args()
+
+
+def _apply_speaker_names(segments: list[dict], names: list[str]) -> list[dict]:
+    """
+    Replace generic Speaker A/B/... labels with the provided real names.
+
+    Names are applied in alphabetical label order: the first name maps to
+    Speaker A, the second to Speaker B, and so on.  If fewer names are given
+    than there are speakers, the remaining speakers keep their generic labels.
+    """
+    unique_speakers = sorted(set(s["speaker"] for s in segments))
+    name_map = {spk: names[i] for i, spk in enumerate(unique_speakers) if i < len(names)}
+    if not name_map:
+        return segments
+    for seg in segments:
+        if seg["speaker"] in name_map:
+            seg["speaker"] = name_map[seg["speaker"]]
+    return segments
 
 
 def _load_json_transcript(json_path: str) -> tuple[list[dict], dict]:
@@ -185,10 +210,18 @@ def main() -> None:
         json_num_speakers = json_meta.get("num_speakers")
         json_source_file = json_meta.get("source_file", os.path.basename(args.from_json))
 
+        parsed_names = (
+            [n.strip() for n in args.speaker_names.split(",") if n.strip()]
+            if args.speaker_names else None
+        )
         settings.override(
             context=args.context or json_context,
             num_speakers=args.num_speakers or json_num_speakers,
+            speaker_names=parsed_names,
         )
+
+        if settings.speaker_names:
+            transcribed_segments = _apply_speaker_names(transcribed_segments, settings.speaker_names)
 
         try:
             settings.validate_for_report()
@@ -205,6 +238,8 @@ def main() -> None:
         print(f"  Source:   {json_source_file}")
         print(f"  Context:  {settings.context}")
         print(f"  Speakers: {len(speaker_counts)}")
+        if settings.speaker_names:
+            print(f"  Names:    {', '.join(settings.speaker_names)}")
         print(f"  Segments: {len(transcribed_segments)}")
         if audio_duration:
             print(f"  Duration: {_fmt_duration(audio_duration)}")
@@ -257,12 +292,19 @@ def main() -> None:
         print("[error] --skip-preprocess requires a WAV file as --input")
         sys.exit(1)
 
+    # Parse --speaker-names "Alice,Bob" → ["Alice", "Bob"]
+    parsed_names = (
+        [n.strip() for n in args.speaker_names.split(",") if n.strip()]
+        if args.speaker_names else None
+    )
+
     # Apply CLI overrides on top of .env settings
     settings.override(
         context=args.context,
         num_speakers=args.num_speakers,
         transcription_mode=args.transcription_mode,
         language=args.language,
+        speaker_names=parsed_names,
     )
     if args.whisper_model:
         settings.whisper_model = args.whisper_model
@@ -272,6 +314,8 @@ def main() -> None:
     print(f"  Input:    {args.input}")
     print(f"  Context:  {settings.context}")
     print(f"  Speakers: {settings.num_speakers or 'auto-detect'}")
+    if settings.speaker_names:
+        print(f"  Names:    {', '.join(settings.speaker_names)}")
     print(f"  Whisper:  {settings.whisper_model}")
     print(f"  Tx Mode:  {settings.transcription_mode}")
     print(f"  Language: {settings.whisper_language}")
@@ -329,6 +373,10 @@ def main() -> None:
         print(f"\n[error] Stage 2 (diarization) failed: {e}")
         sys.exit(1)
     stage_times["Stage 2"] = time.time() - t
+
+    # Apply speaker name mapping if provided
+    if settings.speaker_names:
+        segments = _apply_speaker_names(segments, settings.speaker_names)
 
     # --- Stage 3: Transcription ---
     t = time.time()

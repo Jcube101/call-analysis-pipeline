@@ -4,7 +4,14 @@ Tracks what's built, what's next, and what's planned further out.
 
 ---
 
-## Current state — v0.1 (complete, tested)
+## Current state — v1.0 (complete, tested)
+
+Speaker re-identification and name mapping ship in v1.0. All core quality
+improvements are done. See below for per-version history.
+
+---
+
+## v0.1 (complete, tested)
 
 The core pipeline is functional end-to-end and has been validated on a real M4A call recording:
 
@@ -66,12 +73,12 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 
 ---
 
-## v1.0 — longer-term
+## v1.0 — complete
 
 ### Quality improvements
 
-- [ ] **Speaker re-identification** — extract voice embeddings per segment (pyannote SpeakerEmbedding), cluster globally across the full recording, and reassign labels so the same physical person always gets the same label. Fixes label-flipping on long recordings. Currently mitigated by speaker-aware prompt wording.
-- [ ] **Speaker name mapping** — `--speaker-names "Alice,Bob"` to replace generic labels
+- [x] **Speaker re-identification** — per-segment voice embeddings via `pipeline._embedding`; KMeans clustering with L2-normalised embeddings; cluster IDs remapped to globally consistent `SPEAKER_XX` labels in first-appearance order. Fixes label-flipping on long recordings. Short segments (<1 s) inherit the nearest long segment's label.
+- [x] **Speaker name mapping** — `--speaker-names "Alice,Bob"` (or `SPEAKER_NAMES=Alice,Bob` in `.env`) replaces `Speaker A/B` with real names in transcript and report output.
 - [ ] **Whisper word-level timestamps** — `word_timestamps=True` for finer-grained JSON
 - [ ] **Confidence scores** — include Whisper segment-level log-probability in JSON
 - [ ] **Smarter fast mode** — merge same-speaker diarization turns, transcribe per turn; fewer Whisper calls than accurate, better granularity than current fast

@@ -12,7 +12,7 @@ Takes an audio recording of a two-person conversation (MP3, M4A, WAV, or any ffm
 
 ## Status
 
-**v0.3 is fully functional and tested end-to-end with GPU acceleration** on real call recordings (GTX 1650, CUDA 12.1, Windows 11, Python 3.11). Tested on files up to 2h40m in length. Stage 5 (Gemini report) validated on real transcripts. No hard ceiling on file length — pipeline runs at approximately 1x real-time.
+**v1.0 is fully functional and tested end-to-end with GPU acceleration** on real call recordings (GTX 1650, CUDA 12.1, Windows 11, Python 3.11). Tested on files up to 2h40m in length. Includes speaker re-identification (fixes label flipping on long recordings) and speaker name mapping. No hard ceiling on file length — pipeline runs at approximately 1x real-time.
 
 ## How to run
 
@@ -21,6 +21,7 @@ python main.py --input input/call.mp3
 # Common overrides:
 python main.py --input input/call.mp3 --context work --num-speakers 3
 python main.py --input input/call.mp3 --transcription-mode fast
+python main.py --input input/call.mp3 --speaker-names "Alice,Bob"
 python main.py --input input/call.mp3 --language fr
 # Generate analysis report via Gemini API:
 python main.py --input input/call.mp3 --context work --report
@@ -143,6 +144,7 @@ This avoids a dependency on `torchcodec` (which is not installed). A `UserWarnin
 | `WHISPER_MODEL` | No | `tiny` / `base` / `small` / `medium` / `large` (default: `medium`) |
 | `TRANSCRIPTION_MODE` | No | `accurate` / `fast` (default: `accurate`) |
 | `WHISPER_LANGUAGE` | No | BCP-47 language code, e.g. `en`, `fr`, `es` (default: `en`) |
+| `SPEAKER_NAMES` | No | Comma-separated real names, e.g. `Alice,Bob` (default: generic labels) |
 
 ## Dependencies and install order
 
