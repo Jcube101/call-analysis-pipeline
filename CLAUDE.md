@@ -12,7 +12,7 @@ Takes an audio recording of a two-person conversation (MP3, M4A, WAV, or any ffm
 
 ## Status
 
-**v0.3 is fully functional and tested end-to-end with GPU acceleration** on real call recordings (GTX 1650, CUDA 12.1, Windows 11, Python 3.11). Tested on files up to 10:56 in length. Stage 5 (Gemini report) validated on real transcripts.
+**v0.3 is fully functional and tested end-to-end with GPU acceleration** on real call recordings (GTX 1650, CUDA 12.1, Windows 11, Python 3.11). Tested on files up to 2h40m in length. Stage 5 (Gemini report) validated on real transcripts. No hard ceiling on file length — pipeline runs at approximately 1x real-time.
 
 ## How to run
 

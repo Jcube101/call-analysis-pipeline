@@ -2,7 +2,7 @@
 
 A Python pipeline that takes a recorded conversation and produces a clean, speaker-diarized, timestamped transcript and an AI-generated analysis report. Runs fully locally with GPU acceleration (report generation uses the Gemini API).
 
-**Status: v0.3 — fully functional and tested end-to-end (GPU, Windows 11, GTX 1650).**
+**Status: v0.3 — fully functional and tested end-to-end (GPU, Windows 11, GTX 1650). Validated on recordings up to 2h40m with no memory issues.**
 
 ## What it does
 

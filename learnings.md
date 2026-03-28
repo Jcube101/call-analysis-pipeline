@@ -132,6 +132,47 @@ This pattern was used to diagnose the `DiarizeOutput` issue and is now baked int
 
 ---
 
+## 16. noisereduce STFT causes OOM on long recordings — use chunked processing
+
+**Problem:** `noisereduce.reduce_noise()` on a 90+ minute audio array caused RAM spikes of 3–4 GB and risked OOM crashes.
+
+**Root cause:** noisereduce internally computes a full STFT of the input. For 90 min at 16 kHz the STFT matrix alone is ~1.4 GB (1025 bins × 168k frames × 8 bytes complex64), and multiple temporary arrays coexist during processing.
+
+**Fix:** Process in 60-second slices with a 0.5-second overlap on each side for boundary context. Each slice's STFT is ~57 MB. Only the core (non-overlap) portion of each reduced slice is written to the output array:
+```python
+for each chunk at pos:
+    read_start = max(0, pos - overlap)
+    read_end   = min(total, pos + chunk_size + overlap)
+    reduced = nr.reduce_noise(y=samples[read_start:read_end], ...)
+    offset = pos - read_start
+    output[pos : pos + chunk_size] = reduced[offset : offset + chunk_size]
+```
+Peak RAM stays at ~350 MB regardless of recording length.
+
+**Validated on:** 2h40m M4A file (163 chunks), Stage 1 completed in 2m53s with no OOM errors.
+
+---
+
+## 17. Dead code in Stage 2 was loading full audio for no reason
+
+**Problem:** `diarize.py` called `_normalize_speaker_segments()` but immediately discarded the return value. For a 2h40m file this loaded ~350 MB of audio and created per-speaker audio chunks that were never used.
+
+**Fix:** Removed the dead function call and the function itself. The speaker segment boundaries from pyannote are accurate regardless.
+
+**Lesson:** "Informational" code that produces no side effects and whose return value is discarded should be deleted, not left in place — especially when it carries significant memory cost.
+
+---
+
+## 18. Pipeline scales linearly with recording length at ~1x real-time on GTX 1650
+
+**Observation:** 2h40m recording processed in 2h43m total elapsed:
+- Stage 1 (noise reduction): 2:53 (163 chunks × ~1s each)
+- Stage 2 (diarization): 11:14 (3102 segments — pyannote batches internally)
+- Stage 3 (transcription): 2:29 (3102 segments × 2.88s each)
+- Stage 4 (export): <1s
+
+**Conclusion:** Accurate mode scales linearly with segment count. Stage 2 is sublinear (pyannote processes audio in batches that amortise well). There is no hard ceiling for file length — the pipeline will complete in approximately real-time on a GTX 1650 for any length recording.
+
 ## 15. google-generativeai is deprecated — use google-genai instead
 
 **Problem:** `import google.generativeai` emitted a `FutureWarning` stating that all support for the `google.generativeai` package has ended and it will no longer receive updates or bug fixes.
