@@ -41,6 +41,11 @@ class Settings:
         default_factory=lambda: os.getenv("WHISPER_LANGUAGE", "en")
     )
 
+    # Speaker name mapping — replaces generic "Speaker A/B" labels with real names.
+    # Populated from SPEAKER_NAMES env var (comma-separated, e.g. "Alice,Bob")
+    # or via --speaker-names CLI flag.  Empty list = use generic labels.
+    speaker_names: list = field(default_factory=list)
+
     def __post_init__(self) -> None:
         # Parse NUM_SPEAKERS from env if not overridden programmatically
         if self.num_speakers is None:
@@ -67,12 +72,19 @@ class Settings:
             )
             self.transcription_mode = "fast"
 
+        # Parse SPEAKER_NAMES from env if not already set programmatically
+        if not self.speaker_names:
+            raw_names = os.getenv("SPEAKER_NAMES", "").strip()
+            if raw_names:
+                self.speaker_names = [n.strip() for n in raw_names.split(",") if n.strip()]
+
     def override(
         self,
         context: Optional[str] = None,
         num_speakers: Optional[int] = None,
         transcription_mode: Optional[str] = None,
         language: Optional[str] = None,
+        speaker_names: Optional[list] = None,
     ) -> None:
         """Apply CLI overrides on top of .env values."""
         if context is not None:
@@ -94,6 +106,8 @@ class Settings:
                 )
         if language is not None:
             self.whisper_language = language.strip().lower()
+        if speaker_names is not None:
+            self.speaker_names = speaker_names
 
     def validate_for_diarization(self) -> None:
         """Raise if the HuggingFace token is missing (required for pyannote)."""

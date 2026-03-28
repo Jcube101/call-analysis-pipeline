@@ -4,7 +4,9 @@ Stage 2 — Speaker Diarization
 Steps:
   1. Run pyannote/speaker-diarization-3.1 on the clean WAV
   2. Collect timestamped segments with raw speaker labels (SPEAKER_00, SPEAKER_01, …)
-  3. Per-speaker loudness normalization so both voices land at equal volume
+  3. Re-identify speakers globally via voice embeddings + clustering (fixes label
+     flipping on long recordings — pyannote processes audio in chunks and can
+     inconsistently assign the same physical voice to different labels across chunks)
   4. Return a list of segment dicts for the transcription stage
 """
 
@@ -29,6 +31,112 @@ def _label_map(raw_labels: list[str]) -> dict[str, str]:
     sorted_labels = sorted(set(raw_labels))
     letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     return {label: f"Speaker {letters[i]}" for i, label in enumerate(sorted_labels)}
+
+
+def _reidentify_speakers(
+    segments: list[dict],
+    waveform: "torch.Tensor",
+    sample_rate: int,
+    pipeline: Pipeline,
+    num_speakers: int,
+) -> list[dict]:
+    """
+    Re-assign speaker labels using voice embeddings + KMeans clustering.
+
+    pyannote processes long audio in chunks and can flip speaker labels between
+    chunks (e.g. the same physical voice becomes SPEAKER_00 in the first half
+    and SPEAKER_01 in the second half). This function extracts one embedding
+    per segment, clusters globally, then reassigns labels in first-appearance
+    order so the same voice always maps to the same label.
+
+    Segments shorter than MIN_SEG_SECONDS are skipped during embedding
+    extraction and inherit their label from the nearest long segment.
+
+    Returns the modified segment list, or the original list unchanged if
+    re-identification fails for any reason.
+    """
+    import torch
+    from tqdm import tqdm
+
+    try:
+        from sklearn.cluster import KMeans
+        from sklearn.preprocessing import normalize
+    except ImportError:
+        print("[Stage 2] scikit-learn not installed — skipping speaker re-identification")
+        return segments
+
+    # Locate the embedding model inside the pipeline
+    emb_model = getattr(pipeline, "_embedding", None) or getattr(pipeline, "embedding", None)
+    if emb_model is None:
+        print("[Stage 2] Embedding model not accessible on pipeline — skipping re-identification")
+        return segments
+
+    MIN_SEG_SECONDS = 1.0
+
+    embeddings: list[np.ndarray] = []
+    long_indices: list[int] = []  # segments long enough to embed
+
+    print(f"[Stage 2] Extracting voice embeddings ({len(segments)} segments, ≥{MIN_SEG_SECONDS}s only)...")
+
+    for i, seg in enumerate(tqdm(segments, desc="  Embeddings", unit="seg")):
+        duration = seg["end"] - seg["start"]
+        if duration < MIN_SEG_SECONDS:
+            continue
+
+        start_frame = int(seg["start"] * sample_rate)
+        end_frame = int(seg["end"] * sample_rate)
+        seg_wave = waveform[:, start_frame:end_frame]
+
+        try:
+            emb = emb_model({"waveform": seg_wave, "sample_rate": sample_rate})
+            # Normalise to numpy regardless of whether we got tensor or array
+            if hasattr(emb, "detach"):
+                emb = emb.detach().cpu().numpy()
+            emb = np.asarray(emb).flatten()
+            embeddings.append(emb)
+            long_indices.append(i)
+        except Exception:
+            continue  # skip segments whose embedding fails
+
+    if len(embeddings) < num_speakers:
+        print(
+            f"[Stage 2] Only {len(embeddings)} usable embeddings for {num_speakers} speakers "
+            f"— skipping re-identification"
+        )
+        return segments
+
+    # Cluster embeddings globally
+    emb_matrix = normalize(np.array(embeddings))
+    kmeans = KMeans(n_clusters=num_speakers, n_init=10, random_state=42)
+    cluster_ids = kmeans.fit_predict(emb_matrix)
+
+    # Map cluster IDs → SPEAKER_XX in first-appearance order
+    cluster_to_label: dict[int, str] = {}
+    counter = 0
+    for cid in cluster_ids:
+        if cid not in cluster_to_label:
+            cluster_to_label[cid] = f"SPEAKER_{counter:02d}"
+            counter += 1
+
+    # Write new labels back to long segments
+    long_set = set(long_indices)
+    for seg_idx, cid in zip(long_indices, cluster_ids):
+        segments[seg_idx]["label"] = cluster_to_label[cid]
+
+    # Short segments inherit label from their nearest long segment (by midpoint)
+    for i, seg in enumerate(segments):
+        if i in long_set:
+            continue
+        seg_mid = (seg["start"] + seg["end"]) / 2
+        nearest = min(
+            long_indices,
+            key=lambda li: abs((segments[li]["start"] + segments[li]["end"]) / 2 - seg_mid),
+        )
+        segments[i]["label"] = segments[nearest]["label"]
+
+    n_distinct = len(set(s["label"] for s in segments))
+    print(f"[Stage 2] Re-identification complete — {n_distinct} distinct speaker(s) after clustering")
+    return segments
 
 
 def run(
@@ -87,11 +195,6 @@ def run(
     audio_input = {"waveform": waveform, "sample_rate": sample_rate}
     diarization = pipeline(audio_input, **diarize_kwargs)
 
-    # Free the waveform tensors — pyannote is done with them and they can be
-    # several hundred MB for long recordings
-    del data, waveform, audio_input
-    gc.collect()
-
     # Collect raw segments — handle different pyannote output types across versions
     if hasattr(diarization, "itertracks"):
         annotation = diarization
@@ -105,7 +208,6 @@ def run(
             f"Available attrs: {[a for a in dir(diarization) if not a.startswith('_')]}"
         )
 
-    # Collect raw segments
     raw_segments = [
         {"start": segment.start, "end": segment.end, "label": speaker}
         for segment, track, speaker in annotation.itertracks(yield_label=True)
@@ -116,6 +218,17 @@ def run(
             "[Stage 2] Diarization returned no segments. "
             "Check that the audio file is valid and longer than a few seconds."
         )
+
+    # Re-identify speakers globally — must happen before we free the waveform
+    num_spk = num_speakers or len(set(s["label"] for s in raw_segments))
+    try:
+        raw_segments = _reidentify_speakers(raw_segments, waveform, sample_rate, pipeline, num_spk)
+    except Exception as e:
+        print(f"[Stage 2] Speaker re-identification failed ({e}) — using pyannote labels as-is")
+
+    # Free the waveform tensors now that re-identification is done
+    del data, waveform, audio_input
+    gc.collect()
 
     # Build friendly labels
     label_map = _label_map([s["label"] for s in raw_segments])

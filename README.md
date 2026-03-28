@@ -2,14 +2,14 @@
 
 A Python pipeline that takes a recorded conversation and produces a clean, speaker-diarized, timestamped transcript and an AI-generated analysis report. Runs fully locally with GPU acceleration (report generation uses the Gemini API).
 
-**Status: v0.3 — fully functional and tested end-to-end (GPU, Windows 11, GTX 1650). Validated on recordings up to 2h40m with no memory issues.**
+**Status: v1.0 — fully functional and tested end-to-end (GPU, Windows 11, GTX 1650). Validated on recordings up to 2h40m. Includes speaker re-identification and speaker name mapping.**
 
 ## What it does
 
 | Stage | Description |
 |-------|-------------|
 | 1 — Preprocess | Noise reduction + volume normalization via `noisereduce` and `pydub` |
-| 2 — Diarize | Speaker separation using `pyannote/speaker-diarization-3.1`; per-speaker loudness normalization |
+| 2 — Diarize | Speaker separation using `pyannote/speaker-diarization-3.1`; global re-identification via voice embeddings + KMeans clustering to fix label flipping on long recordings |
 | 3 — Transcribe | Transcription with faster-whisper (local, GPU-accelerated); two modes: `accurate` (default) and `fast` |
 | 4 — Export | Structured `.txt` and `.json` output with metadata header, uniquely named per run |
 | 5 — Report | AI-generated analysis report via Gemini API; triggered with `--report` |
@@ -110,6 +110,7 @@ Edit `.env` and fill in:
 - `NUM_SPEAKERS` — integer (e.g. `2`) or leave blank for auto-detection
 - `TRANSCRIPTION_MODE` — `accurate` (default) or `fast`
 - `WHISPER_LANGUAGE` — BCP-47 language code, e.g. `en`, `fr`, `es` (default: `en`)
+- `SPEAKER_NAMES` — comma-separated real names, e.g. `Alice,Bob` (optional; replaces generic `Speaker A/B` labels)
 
 ### Create local directories
 
@@ -137,6 +138,9 @@ python main.py --input input/call.mp3 --context work --report
 # Use fast transcription mode (coarser output, ~20% faster)
 python main.py --input input/call.mp3 --transcription-mode fast
 
+# Replace generic speaker labels with real names
+python main.py --input input/call.mp3 --speaker-names "Alice,Bob"
+
 # Transcribe a non-English recording
 python main.py --input input/call.mp3 --language fr
 
@@ -158,6 +162,7 @@ The startup banner shows settings and device info:
   Input:    input/call.m4a
   Context:  work
   Speakers: 2
+  Names:    Alice, Bob
   Whisper:  medium
   Tx Mode:  accurate
   Language: en

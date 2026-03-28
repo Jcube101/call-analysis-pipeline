@@ -4,7 +4,7 @@
 
 A local Python pipeline that processes a recorded voice call and produces a clean, structured transcript with speaker attribution and an optional AI-generated analysis report. Audio processing runs fully locally (no cloud audio processing), GPU-accelerated, with all secrets managed via `.env`. Report generation uses the Gemini API.
 
-**Tested and working on Windows 11, Python 3.11, CPU-only torch.**
+**Tested and working on Windows 11, Python 3.11, CUDA 12.1, GTX 1650.**
 
 ---
 
@@ -19,6 +19,7 @@ A local Python pipeline that processes a recorded voice call and produces a clea
 | `--whisper-model SIZE` | CLI / `.env` | Whisper model size: `tiny`, `base`, `small`, `medium` (default), `large` |
 | `--transcription-mode MODE` | CLI / `.env` | `accurate` (default) or `fast` |
 | `--language LANG` | CLI / `.env` | BCP-47 language code, e.g. `en`, `fr`, `es` (default: `en`) |
+| `--speaker-names NAMES` | CLI / `.env` | Comma-separated real names to replace generic labels, e.g. `Alice,Bob` |
 | `--dry-run` | CLI flag | Validate config and input without running any stage |
 | `--skip-preprocess` | CLI flag | Skip Stage 1; `--input` must be a clean 16 kHz mono WAV |
 | `--report` | CLI flag | Run Stage 5: generate an analysis report via Gemini API |
@@ -106,8 +107,8 @@ Can be skipped with `--skip-preprocess` when a clean WAV already exists.
 | Speaker count | Passed as `num_speakers` int (or `None` for auto-detection) |
 | GPU acceleration | Used automatically if `torch.cuda.is_available()` |
 | Output unwrapping | pyannote 3.x returns `DiarizeOutput`; `exclusive_speaker_diarization` attribute is the `Annotation` used for iteration |
-| Label mapping | `SPEAKER_00` → `Speaker A`, `SPEAKER_01` → `Speaker B`, etc. |
-| Per-speaker normalization | Each speaker's segments concatenated and normalized independently |
+| Re-identification | Per-segment voice embeddings via `pipeline._embedding`; KMeans clustering (`n_clusters=num_speakers`) with L2-normalised embeddings; cluster IDs remapped to `SPEAKER_XX` in first-appearance order; segments <1 s inherit label from nearest long segment |
+| Label mapping | `SPEAKER_00` → `Speaker A`, `SPEAKER_01` → `Speaker B`, etc. (applied after re-identification) |
 
 **Output:** List of segment dicts:
 ```python
@@ -198,6 +199,7 @@ Only runs when `--report` is passed. `GEMINI_API_KEY` is validated early (before
 | `whisper_model` | `WHISPER_MODEL` | `--whisper-model` | `"medium"` |
 | `transcription_mode` | `TRANSCRIPTION_MODE` | `--transcription-mode` | `"accurate"` |
 | `whisper_language` | `WHISPER_LANGUAGE` | `--language` | `"en"` |
+| `speaker_names` | `SPEAKER_NAMES` | `--speaker-names` | `[]` (generic) |
 
 ---
 
