@@ -81,23 +81,20 @@ source venv/bin/activate       # macOS/Linux
 venv\Scripts\activate          # Windows
 ```
 
-**Install dependencies — order matters:**
+**Install dependencies — order matters on Windows/CPU setups:**
 
 ```bash
-# 1. PyTorch with CUDA 12.1 (for NVIDIA GPU)
-pip install torch==2.1.0+cu121 torchaudio==2.1.0+cu121 --index-url https://download.pytorch.org/whl/cu121
+# 1. PyTorch first (CPU build)
+pip install torch==2.1.0+cpu torchaudio==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
 
-# For CPU-only (no GPU):
-# pip install torch==2.1.0+cpu torchaudio==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
-
-# 2. Pin numpy before anything else upgrades it
+# 2. Pin numpy before anything else can upgrade it
 pip install "numpy<2.0" --force-reinstall
 
 # 3. Remaining dependencies
 pip install -r requirements.txt
 ```
 
-> **Why the order?** pip will resolve `torch` to the latest version if not pre-installed, pulling in numpy 2.x which breaks pyannote. Installing torch first prevents this.
+> **Why the order?** If `pip install -r requirements.txt` runs first, PyPI resolves `torch` to the latest version which pulls in `numpy 2.x`, breaking `pyannote.audio`. Installing torch from the CPU wheel index first prevents this.
 
 ### Configure environment
 
@@ -122,7 +119,7 @@ mkdir input output
 
 ## Running the pipeline
 
-Supports MP3, M4A, WAV, MPEG, and any ffmpeg-supported format:
+Supports MP3, M4A, WAV, and any other ffmpeg-supported audio format:
 
 ```bash
 python main.py --input input/your_recording.m4a
@@ -214,6 +211,16 @@ You may see:
 UserWarning: torchcodec is not installed correctly so built-in audio decoding will fail.
 ```
 **Harmless** — audio is passed as a pre-loaded waveform so torchcodec is never used.
+
+### Known warnings
+
+You may see this on startup:
+
+```
+UserWarning: torchcodec is not installed correctly so built-in audio decoding will fail.
+```
+
+**This is harmless.** The pipeline passes audio to pyannote as a pre-loaded in-memory waveform (not via file path), so `torchcodec` is never used. The warning is suppressed in the code.
 
 ## Project structure
 
