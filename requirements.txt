@@ -28,3 +28,8 @@ scikit-learn>=1.0.0
 
 # Google Gemini API — Stage 5 report generation (optional; only used with --report flag)
 google-genai>=1.0.0
+
+# FastAPI HTTP + WebSocket server (api.py)
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
