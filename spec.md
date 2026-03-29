@@ -85,6 +85,18 @@ All outputs land in `output/`. Each run produces uniquely named transcript files
 
 When `--from-json --speaker-names` is used, a `<stem>_named.json` is written alongside the original with updated speaker labels and `relabelled_at` added to metadata.
 
+When produced via `api.py`, `"job_id"` is inserted as the first key in `metadata`:
+```json
+{
+  "metadata": {
+    "job_id": "550e8400-e29b-41d4-a716-446655440000",
+    "source_file": "call.m4a",
+    ...
+  }
+}
+```
+This allows `POST /report-from-json` to find the correct job folder when the JSON is re-uploaded.
+
 ---
 
 ## Pipeline stages
@@ -283,6 +295,65 @@ pip install -r requirements.txt
 - Stage 5 sends transcript text to the Gemini API — do not use `--report` if the recording is confidential
 - `.env` is gitignored; secrets never committed
 - `input/` and `output/` are gitignored; recordings and transcripts never committed
+
+---
+
+## REST API wrapper (api.py)
+
+`api.py` exposes the full pipeline over HTTP + WebSocket. It is separate from `main.py` and has no effect on CLI usage.
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Server health check |
+| POST | `/analyse` | Multipart upload (audio file + JSON params); starts pipeline; returns `{"job_id": "..."}` |
+| POST | `/report-from-json` | Multipart upload (transcript JSON); runs Stage 5 only; returns `{"job_id": "..."}` |
+| GET | `/status/{job_id}` | Returns `{"status": "...", "stage": "..."}` |
+| GET | `/reconnect/{job_id}` | Returns full job state: transcript, report, metadata, status |
+| GET | `/download/{job_id}/{type}` | Streams output file; `type` ∈ `txt`, `json`, `report`, `wav` |
+| WS | `/ws/{job_id}` | WebSocket — progress messages, final `complete` payload |
+
+### Job lifecycle
+
+1. Client POSTs to `/analyse` → `job_id` returned immediately
+2. Client opens `WS /ws/{job_id}` → receives progress messages as each stage completes
+3. Pipeline completes → `{"type": "complete", "transcript": [...], "report": "...", "metadata": {...}}` sent over WS
+4. If WS drops (ngrok timeout), client calls `GET /reconnect/{job_id}` → full state returned for display
+
+### Output structure (API mode)
+
+```
+output/
+└── jobs/
+    └── {job_id}/
+        ├── <name>_<timestamp>.txt
+        ├── <name>_<timestamp>.json      # includes "job_id" as first metadata key
+        ├── <name>_<timestamp>_report.md
+        └── <name>_clean.wav
+```
+
+### Threading and concurrency
+
+- `ThreadPoolExecutor(max_workers=1)` — one pipeline job at a time (GPU constraint)
+- asyncio event loop captured at startup; background threads push WS messages via `asyncio.run_coroutine_threadsafe(...).result(timeout=5)`
+- All WS messages stored in `job["message_queue"]` — replayed to clients that reconnect
+- `threading.excepthook` installed to prevent thread crashes killing uvicorn
+
+### Settings isolation
+
+`settings` is a global singleton. Each job resets it to startup defaults (`_default_settings` snapshot), then applies job-specific overrides. This avoids per-job `Settings()` instantiation overhead.
+
+### CORS
+
+Three-layer setup for ngrok compatibility:
+1. `CORSMiddleware(allow_origins=["*"])` — standard FastAPI CORS
+2. `CORSFallbackMiddleware` (BaseHTTPMiddleware) — stamps headers on every response
+3. `@app.options("/{path:path}")` — explicit OPTIONS → 200 handler
+
+### Stage 5 heartbeat
+
+Gemini API calls take 30–60 s. A `_heartbeat_worker` daemon thread sends a progress ping every 10 s during Stage 5 to prevent ngrok from closing the idle WebSocket connection.
 
 ---
 

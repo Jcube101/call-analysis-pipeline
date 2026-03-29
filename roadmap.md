@@ -83,6 +83,12 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 - [x] **Word-level timestamps** — `--word-timestamps` (or `WORD_TIMESTAMPS=true`) adds a `words` list to each JSON segment with per-word start/end times and probability scores (~10-15% overhead).
 - [x] **Smarter fast mode** — merges consecutive same-speaker diarization segments into turns (gap ≤ 1s), transcribes one turn at a time; 10-20x fewer Whisper calls than accurate on long recordings while preserving speaker-accurate boundaries.
 
+### API / Integration
+
+- [x] **FastAPI wrapper** — `api.py` exposes the full pipeline over HTTP + WebSocket with job management, real-time progress via WebSocket, message queue replay on reconnect, and disk-based job recovery after server restart
+- [x] **Frontend integration** — job-joseph.com web frontend consumes the API; uploads audio, tracks pipeline progress via WebSocket, displays transcript and AI report on completion
+- [x] **CORS + ngrok support** — three-layer CORS setup handles ngrok headers; heartbeat thread during Stage 5 keeps WebSocket alive across ngrok's 30 s idle timeout; `/reconnect/{job_id}` endpoint for client-side state recovery
+
 ### Usability
 
 - [ ] **Batch mode** — `python main.py --input-dir input/` to process all audio files
@@ -97,9 +103,22 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 
 ---
 
+---
+
+## v1.1 — Frontend fixes (in progress)
+
+- [ ] **Markdown rendering** — render AI report content in the browser instead of displaying raw Markdown text
+- [ ] **Download buttons** — wire up download links for transcript (.txt), JSON, report (.md), and clean audio (.wav) from the frontend
+- [ ] **Full report display** — show the complete AI report text in the frontend UI (currently truncated)
+
+---
+
 ## Icebox (no timeline)
 
 - Speaker identification (match `Speaker A` to a known voice profile)
 - Real-time streaming transcription
 - Cloud storage integration (S3/GCS for input/output)
 - Webhook on completion (e.g. post JSON to a URL)
+- Persistent SQLite job storage (replace in-memory dict; survive process crashes)
+- ngrok static domain (eliminate reconnect workaround for frontend)
+- Docker image with `api.py` included (single container for CLI + API modes)

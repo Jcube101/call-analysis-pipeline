@@ -12,7 +12,9 @@ Takes an audio recording of a two-person conversation (MP3, M4A, WAV, or any ffm
 
 ## Status
 
-**v1.0 is fully functional and tested end-to-end with GPU acceleration** on real call recordings (GTX 1650, CUDA 12.1, Windows 11, Python 3.11). Tested on files up to 2h40m in length. Includes speaker re-identification (fixes label flipping on long recordings) and speaker name mapping. No hard ceiling on file length — pipeline runs at approximately 1x real-time.
+**v1.0 is fully functional and tested end-to-end with GPU acceleration** on real call recordings (GTX 1650, CUDA 12.1, Windows 11, Python 3.11). Tested on files up to 2h40m in length. Includes speaker re-identification, speaker name mapping, and a FastAPI HTTP+WebSocket wrapper (`api.py`). A web frontend at job-joseph.com consumes the API. Pipeline runs at approximately 1x real-time; no hard ceiling on file length.
+
+**Known issue:** ngrok free tier drops idle WebSocket connections after ~30 s. The API addresses this with a heartbeat thread during Stage 5 and a `/reconnect/{job_id}` endpoint for client-side state recovery.
 
 ## How to run
 
@@ -37,7 +39,8 @@ All config (tokens, context, speaker count, transcription mode, language) lives 
 ## Project layout
 
 ```
-main.py          — entry point, orchestrates all stages
+main.py          — entry point, orchestrates all stages (CLI)
+api.py           — FastAPI HTTP + WebSocket wrapper (programmatic access)
 config.py        — Settings dataclass, loads .env via python-dotenv
 stages/
   preprocess.py  — Stage 1: noise reduction + normalization (pydub, noisereduce)
@@ -63,7 +66,7 @@ output/          — pipeline outputs land here (gitignored, must exist locally)
 - **No chunking yet** — large file support is deferred, but don't architect it out. Keep it in mind when touching Stage 1 or 3.
 - **Error handling** — each stage call in `main.py` is wrapped in try/except. Failures print `[error] Stage N (name) failed: <message>` and exit with code 1.
 
-## pyannote API compatibility (important)
+## Output file naming
 
 Each run produces uniquely named files using the source filename + timestamp:
 ```
@@ -145,14 +148,11 @@ This avoids a dependency on `torchcodec` (which is not installed). A `UserWarnin
 | `TRANSCRIPTION_MODE` | No | `accurate` / `fast` (default: `accurate`) |
 | `WHISPER_LANGUAGE` | No | BCP-47 language code, e.g. `en`, `fr`, `es` (default: `en`) |
 | `SPEAKER_NAMES` | No | Comma-separated real names, e.g. `Alice,Bob` (default: generic labels) |
-| `WORD_TIMESTAMPS` | No | `true` / `1` to include per-word timestamps in JSON (~10-15% overhead) |
+| `WORD_TIMESTAMPS` | No | `true` / `1` to include per-word timestamps in JSON (~10–15% overhead) |
 
 ## Dependencies and install order
 
-Key packages: `pydub`, `noisereduce`, `pyannote.audio`, `faster-whisper`, `torch`, `soundfile`, `librosa`, `python-dotenv`, `tqdm`, `google-genai`.
-System dependency: `ffmpeg` must be on PATH.
-
-Key packages: `pydub`, `noisereduce`, `pyannote.audio`, `openai-whisper`, `torch`, `soundfile`, `librosa`, `python-dotenv`, `tqdm`.
+Key packages: `pydub`, `noisereduce`, `pyannote.audio`, `faster-whisper`, `torch`, `soundfile`, `librosa`, `python-dotenv`, `tqdm`, `google-genai`, `fastapi`, `uvicorn`, `python-multipart`.
 System dependency: `ffmpeg` must be on PATH (`main.py` checks this on startup).
 
 Key version constraints (all in `requirements.txt`):
@@ -171,6 +171,91 @@ pip install torch==2.1.0+cpu torchaudio==2.1.0+cpu --index-url https://download.
 pip install "numpy<2.0" --force-reinstall
 pip install -r requirements.txt
 ```
+
+## FastAPI wrapper (api.py)
+
+`api.py` exposes the full pipeline over HTTP + WebSocket. Start it with:
+
+```bash
+uvicorn api:app --host 0.0.0.0 --port 8000
+```
+
+Requires `fastapi`, `uvicorn`, `python-multipart` (not in `requirements.txt` — install separately or add them).
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check |
+| POST | `/analyse` | Upload audio file, start pipeline job; returns `job_id` |
+| POST | `/report-from-json` | Upload transcript JSON, run Stage 5 only; returns `job_id` |
+| GET | `/status/{job_id}` | Poll current job status and stage |
+| GET | `/reconnect/{job_id}` | Full job state recovery (transcript + report + metadata) |
+| GET | `/download/{job_id}/{type}` | Download output file; `type` ∈ `txt`, `json`, `report`, `wav` |
+| WS | `/ws/{job_id}` | WebSocket — real-time progress, final `complete` message |
+
+### Job model
+
+Each job is stored in an in-memory `jobs` dict and in `output/jobs/{job_id}/`. On server restart, `get_or_recover_job()` scans that directory and hydrates the job from disk (transcript JSON + report MD).
+
+WebSocket messages are stored in `job["message_queue"]` so clients that disconnect mid-job can replay all messages on reconnect via the WS endpoint's flush-on-connect logic.
+
+The `complete` WebSocket message shape:
+```json
+{"type": "complete", "transcript": [...], "report": "...", "metadata": {...}}
+```
+
+### Threading model
+
+All pipeline jobs run in a `ThreadPoolExecutor(max_workers=1)`. This serialises jobs since pyannote + Whisper together consume the full 4 GB VRAM budget. The `asyncio` event loop is captured at startup in `_loop`; background threads push WebSocket messages via `asyncio.run_coroutine_threadsafe(...).result(timeout=5)`.
+
+`threading.excepthook` is installed at module level so crashes in pipeline threads print a traceback and exit gracefully without killing uvicorn.
+
+### Settings per job
+
+`settings` is a global singleton. Each job resets it via `settings.__dict__.update(_default_settings)` where `_default_settings` is a snapshot taken at startup. Job-specific overrides (context, num_speakers, etc.) are then applied on top.
+
+### CUDA cleanup between stages
+
+After Stage 2 (pyannote) and before Stage 3 (Whisper):
+```python
+torch.cuda.synchronize()
+torch.cuda.empty_cache()
+gc.collect()
+torch.cuda.empty_cache()
+time.sleep(2)
+```
+Without this, Whisper fails to allocate VRAM because pyannote has not fully released it.
+
+### CORS
+
+Three layers to handle ngrok headers:
+1. `CORSMiddleware` — standard FastAPI CORS middleware with `allow_origins=["*"]`
+2. `CORSFallbackMiddleware` (BaseHTTPMiddleware) — stamps CORS headers on every response
+3. `@app.options("/{path:path}")` — explicit OPTIONS handler returning 200
+
+### Heartbeat during Stage 5
+
+The Gemini API call takes 30–60 s. ngrok free tier drops idle WebSocket connections after ~30 s. A `_heartbeat_worker` daemon thread sends a progress ping every 10 s during Stage 5 to keep the connection alive.
+
+### report-from-json folder linking
+
+`POST /report-from-json` reads the uploaded JSON before choosing an output directory. If `metadata.job_id` in the JSON matches an existing `output/jobs/{job_id}/` folder, the report is written there (keeping all files for a call together). Otherwise a new `job_id` and folder are created.
+
+### BaseException handling
+
+Pipeline threads catch `BaseException` (not just `Exception`) because ctranslate2's CUDA teardown raises `SystemExit` on Windows when the WhisperModel is garbage-collected mid-process. This is the same bug handled by the `_active_model` module-level reference in `transcribe.py`.
+
+## Frontend (job-joseph.com)
+
+A web frontend at job-joseph.com consumes the API. It connects to the ngrok-exposed URL, uploads audio via `POST /analyse`, then opens a WebSocket for real-time progress. On job completion the `complete` message delivers the transcript and report inline.
+
+**ngrok reconnect flow:** If the WebSocket drops (ngrok free tier timeout), the client calls `GET /reconnect/{job_id}` to retrieve the full job state and resume display without re-processing.
+
+**Known v1.1 issues (in progress):**
+- Report content displayed as raw Markdown (browser does not render it)
+- Download buttons not yet wired up
+- Full report text truncated in the complete message UI
 
 ## What NOT to commit
 
