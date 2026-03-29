@@ -3,12 +3,13 @@ api.py — FastAPI HTTP + WebSocket wrapper for the call analysis pipeline.
 
 Endpoints
 ---------
-  POST /analyse              Upload audio file; runs Stages 1–4 (and 5 if report=true)
-  POST /report-from-json     Upload existing transcript JSON; runs Stage 5 only
-  GET  /health               {"status": "ok"}
-  GET  /status/{job_id}      Full job dict (status, files, error)
+  POST /analyse                   Upload audio file; runs Stages 1–4 (and 5 if report=true)
+  POST /report-from-json          Upload existing transcript JSON; runs Stage 5 only
+  GET  /health                    {"status": "ok"}
+  GET  /status/{job_id}           Full job dict
+  GET  /reconnect/{job_id}        Full job state for reconnect after a dropped connection
   GET  /download/{job_id}/{type}  Stream transcript / json / report file
-  WS   /ws/{job_id}          Push progress / complete / error events
+  WS   /ws/{job_id}               Push progress / complete / error events
 
 Job lifecycle
 -------------
@@ -17,8 +18,11 @@ Job lifecycle
 WebSocket message shapes
 ------------------------
   {"type": "progress", "stage": 1, "stage_name": "Preprocess", "message": "..."}
-  {"type": "complete", "job_id": "...", "files": {"transcript": "...", "json": "..."}}
+  {"type": "complete", "transcript": [...], "report": "...|null", "metadata": {...}}
   {"type": "error", "message": "..."}
+
+All messages are appended to job["message_queue"] so reconnecting clients can
+replay the full history via /reconnect or by connecting to /ws/{job_id}.
 
 GPU constraint
 --------------
@@ -29,6 +33,7 @@ GPU constraint
 from __future__ import annotations
 
 import asyncio
+import glob as _glob
 import json
 import os
 import shutil
@@ -48,6 +53,7 @@ from config import VALID_CONTEXTS, Settings, settings
 # Snapshot of .env defaults taken once at startup — reused on every job reset
 # to avoid re-parsing environment variables per request.
 _default_settings: dict = {}
+
 from stages import diarize, export, preprocess, report, transcribe
 
 
@@ -119,38 +125,117 @@ def _configure_settings(params: dict) -> None:
         settings.whisper_model = params["whisper_model"]
 
 
-def _push_progress(job_id: str, stage: int, stage_name: str, message: str) -> None:
-    """Push a progress event to the WebSocket client for this job (thread-safe)."""
+def get_or_recover_job(job_id: str) -> Optional[dict]:
+    """
+    Return the in-memory job dict, or reconstruct it from disk if the server restarted.
+
+    On recovery the entry is re-inserted into the global jobs dict so subsequent
+    lookups are fast.
+    """
+    if job_id in jobs:
+        return jobs[job_id]
+
+    job_dir = f"output/jobs/{job_id}"
+    if not os.path.isdir(job_dir):
+        return None
+
+    txt_files = _glob.glob(os.path.join(job_dir, "*.txt"))
+    json_files = [
+        f for f in _glob.glob(os.path.join(job_dir, "*.json"))
+        if os.path.basename(f) not in ("transcript.json",)
+        and not os.path.basename(f).startswith("input")
+    ]
+    report_files = _glob.glob(os.path.join(job_dir, "*_report.md"))
+
+    files: dict = {}
+    if txt_files:
+        files["transcript"] = txt_files[0]
+    if json_files:
+        files["json"] = json_files[0]
+    if report_files:
+        files["report"] = report_files[0]
+
+    recovered: dict = {
+        "status": "complete",
+        "output_dir": job_dir,
+        "files": files,
+        "message_queue": [],
+        "current_stage": None,
+        "stage_name": None,
+        "progress_message": None,
+        "transcript": None,
+        "metadata": {},
+        "report": None,
+        "error": None,
+    }
+
+    # Hydrate transcript and metadata from the pipeline JSON output
+    json_path = files.get("json")
+    if json_path and os.path.isfile(json_path):
+        try:
+            with open(json_path, encoding="utf-8") as f:
+                data = json.load(f)
+            recovered["metadata"] = data.get("metadata", {})
+            recovered["transcript"] = data.get("transcript", [])
+        except Exception:
+            pass
+
+    # Hydrate report text
+    report_path = files.get("report")
+    if report_path and os.path.isfile(report_path):
+        try:
+            with open(report_path, encoding="utf-8") as f:
+                recovered["report"] = f.read()
+        except Exception:
+            pass
+
+    jobs[job_id] = recovered
+    return recovered
+
+
+def _push_ws(job_id: str, payload: dict) -> None:
+    """
+    Append a message to the job's queue and attempt delivery via WebSocket (thread-safe).
+
+    The message is stored regardless of WS availability so reconnecting clients
+    can replay the full history via /reconnect/{job_id} or /ws/{job_id}.
+    """
+    job = jobs.get(job_id)
+    if job is not None:
+        job["message_queue"].append(payload)
+
     ws = connections.get(job_id)
     if ws is None or _loop is None:
         return
-    payload = json.dumps({
-        "type": "progress",
-        "stage": stage,
-        "stage_name": stage_name,
-        "message": message,
-    })
-    asyncio.run_coroutine_threadsafe(ws.send_text(payload), _loop)
+
+    future = asyncio.run_coroutine_threadsafe(ws.send_json(payload), _loop)
+    try:
+        future.result(timeout=5)
+    except Exception:
+        pass  # message is safe in queue; client can replay via /reconnect
+
+
+def _push_progress(job_id: str, stage: int, stage_name: str, message: str) -> None:
+    job = jobs.get(job_id)
+    if job is not None:
+        job["current_stage"] = stage
+        job["stage_name"] = stage_name
+        job["progress_message"] = message
+    _push_ws(job_id, {"type": "progress", "stage": stage, "stage_name": stage_name, "message": message})
 
 
 def _push_complete(job_id: str) -> None:
-    ws = connections.get(job_id)
-    if ws is None or _loop is None:
-        return
-    payload = json.dumps({
+    job = jobs[job_id]
+    _push_ws(job_id, {
         "type": "complete",
-        "job_id": job_id,
-        "files": jobs[job_id].get("files", {}),
+        "transcript": job.get("transcript") or [],
+        "report": job.get("report"),
+        "metadata": job.get("metadata", {}),
     })
-    asyncio.run_coroutine_threadsafe(ws.send_text(payload), _loop)
 
 
 def _push_error(job_id: str, message: str) -> None:
-    ws = connections.get(job_id)
-    if ws is None or _loop is None:
-        return
-    payload = json.dumps({"type": "error", "message": message})
-    asyncio.run_coroutine_threadsafe(ws.send_text(payload), _loop)
+    _push_ws(job_id, {"type": "error", "message": message})
 
 
 # ---------------------------------------------------------------------------
@@ -205,8 +290,18 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
             context=settings.context,
             num_speakers=settings.num_speakers,
             speaker_names=settings.speaker_names or None,
+            job_id=job_id,
         )
         _push_progress(job_id, 4, "Export", "Done")
+
+        # Store transcript and metadata in job for WS complete message and /reconnect
+        job["transcript"] = transcribed_segments
+        job["metadata"] = {
+            "job_id": job_id,
+            "source_file": os.path.basename(input_path),
+            "context": settings.context,
+            "num_speakers": settings.num_speakers,
+        }
 
         files: dict = {"transcript": txt_path, "json": json_path, "clean_wav": clean_wav}
 
@@ -232,6 +327,11 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
                 api_key=settings.gemini_api_key,
                 prompts_dir="prompts",
             )
+            try:
+                with open(report_path, encoding="utf-8") as f:
+                    job["report"] = f.read()
+            except Exception:
+                pass
             files["report"] = report_path
             _push_progress(job_id, 5, "Report", "Done")
 
@@ -303,6 +403,14 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
         )
         _push_progress(job_id, 5, "Report", "Done")
 
+        try:
+            with open(report_path, encoding="utf-8") as f:
+                job["report"] = f.read()
+        except Exception:
+            pass
+
+        job["transcript"] = transcribed_segments
+        job["metadata"] = json_meta
         files["report"] = report_path
         job["status"] = "complete"
         job["files"] = files
@@ -362,7 +470,19 @@ async def analyse(
         "whisper_model": whisper_model,
     }
 
-    jobs[job_id] = {"status": "queued", "params": params}
+    jobs[job_id] = {
+        "status": "queued",
+        "params": params,
+        "message_queue": [],
+        "current_stage": None,
+        "stage_name": None,
+        "progress_message": None,
+        "transcript": None,
+        "metadata": {},
+        "report": None,
+        "error": None,
+        "output_dir": job_dir,
+    }
     executor.submit(_run_pipeline, job_id, input_path, params)
 
     return {"job_id": job_id, "ws_url": f"/ws/{job_id}"}
@@ -374,13 +494,30 @@ async def report_from_json(
     context: Optional[str] = Form(None),
     speaker_names: Optional[str] = Form(None),
 ):
-    job_id = str(uuid.uuid4())
-    job_dir = f"output/jobs/{job_id}"
-    os.makedirs(job_dir, exist_ok=True)
+    # Read bytes first so we can inspect the metadata before choosing a folder
+    content = await file.read()
+
+    # If the JSON carries a job_id from a previous pipeline run, write the
+    # report into that job's existing folder so all files stay together.
+    existing_job_id: Optional[str] = None
+    try:
+        existing_job_id = json.loads(content).get("metadata", {}).get("job_id")
+    except Exception:
+        pass
+
+    if existing_job_id and os.path.isdir(f"output/jobs/{existing_job_id}"):
+        job_id = existing_job_id
+        job_dir = f"output/jobs/{existing_job_id}"
+        prior = get_or_recover_job(existing_job_id) or {}
+    else:
+        job_id = str(uuid.uuid4())
+        job_dir = f"output/jobs/{job_id}"
+        os.makedirs(job_dir, exist_ok=True)
+        prior = {}
 
     json_path = os.path.join(job_dir, "transcript.json")
     with open(json_path, "wb") as fh:
-        shutil.copyfileobj(file.file, fh)
+        fh.write(content)
 
     parsed_names = (
         [n.strip() for n in speaker_names.split(",") if n.strip()]
@@ -392,7 +529,21 @@ async def report_from_json(
         "speaker_names": parsed_names,
     }
 
-    jobs[job_id] = {"status": "queued", "params": params}
+    # Preserve files and transcript from the prior pipeline run if available
+    jobs[job_id] = {
+        "status": "queued",
+        "params": params,
+        "message_queue": prior.get("message_queue", []),
+        "current_stage": None,
+        "stage_name": None,
+        "progress_message": None,
+        "transcript": prior.get("transcript"),
+        "metadata": prior.get("metadata", {}),
+        "report": None,
+        "error": None,
+        "output_dir": job_dir,
+        "files": prior.get("files", {}),
+    }
     executor.submit(_run_report_from_json, job_id, json_path, params)
 
     return {"job_id": job_id, "ws_url": f"/ws/{job_id}"}
@@ -400,16 +551,36 @@ async def report_from_json(
 
 @app.get("/status/{job_id}")
 async def status(job_id: str):
-    if job_id not in jobs:
+    job = get_or_recover_job(job_id)
+    if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    return jobs[job_id]
+    return job
+
+
+@app.get("/reconnect/{job_id}")
+async def reconnect(job_id: str):
+    """Return full job state for a client reconnecting after a dropped connection."""
+    job = get_or_recover_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {
+        "status": job.get("status"),
+        "current_stage": job.get("current_stage"),
+        "stage_name": job.get("stage_name"),
+        "progress_message": job.get("progress_message"),
+        "message_queue": job.get("message_queue", []),
+        "transcript": job.get("transcript"),
+        "report": job.get("report"),
+        "metadata": job.get("metadata", {}),
+        "error": job.get("error"),
+    }
 
 
 @app.get("/download/{job_id}/{file_type}")
 async def download(job_id: str, file_type: str):
-    if job_id not in jobs:
+    job = get_or_recover_job(job_id)
+    if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    job = jobs[job_id]
     if job["status"] != "complete":
         raise HTTPException(status_code=409, detail="Job not complete")
     files = job.get("files", {})
@@ -424,25 +595,23 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
     await websocket.accept()
     connections[job_id] = websocket
     try:
-        # If the job already finished before the WS client connected, send final state now
-        job = jobs.get(job_id)
+        # Flush any messages that arrived before the client connected (handles
+        # race conditions and reconnects after ngrok/network drops).
+        job = get_or_recover_job(job_id)
         if job:
-            if job["status"] == "complete":
-                await websocket.send_text(json.dumps({
-                    "type": "complete",
-                    "job_id": job_id,
-                    "files": job.get("files", {}),
-                }))
-            elif job["status"] == "error":
-                await websocket.send_text(json.dumps({
-                    "type": "error",
-                    "message": job.get("error", "Unknown error"),
-                }))
+            for msg in list(job.get("message_queue", [])):
+                try:
+                    await websocket.send_json(msg)
+                except Exception:
+                    break
 
-        # Hold the connection open until the client disconnects
+        # Hold the connection open; pipeline pushes messages asynchronously.
         while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
+            try:
+                await websocket.receive_text()
+            except (WebSocketDisconnect, Exception):
+                break
+    except Exception:
         pass
     finally:
         connections.pop(job_id, None)

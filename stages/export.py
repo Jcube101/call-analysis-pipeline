@@ -50,6 +50,7 @@ def run(
     context: str = "friend",
     num_speakers: Optional[int] = None,
     speaker_names: Optional[list] = None,
+    job_id: Optional[str] = None,
 ) -> tuple[str, str]:
     """
     Run Stage 4.
@@ -61,6 +62,7 @@ def run(
         context:       Conversation context tag.
         num_speakers:  Speaker count (may be None if auto-detected).
         speaker_names: Real names used for speaker labels, if provided.
+        job_id:        API job ID to embed in metadata for round-trip linking.
 
     Returns:
         (txt_path, json_path) — absolute paths to the two output files.
@@ -71,12 +73,15 @@ def run(
     if num_speakers is None:
         num_speakers = len(set(s["speaker"] for s in segments))
 
-    metadata: dict = {
+    metadata: dict = {}
+    if job_id:
+        metadata["job_id"] = job_id
+    metadata.update({
         "source_file": os.path.basename(source_file),
         "context": context,
         "num_speakers": num_speakers,
         "processed_at": datetime.now().isoformat(timespec="seconds"),
-    }
+    })
     if speaker_names:
         metadata["speaker_names"] = speaker_names
 
