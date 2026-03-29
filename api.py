@@ -268,6 +268,14 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
         )
         if settings.speaker_names:
             segments = _apply_speaker_names(segments, settings.speaker_names)
+        # Belt-and-suspenders: flush any VRAM the diarization pipeline left behind
+        # before Stage 3 loads Whisper (diarize.run already does this internally,
+        # but a second call is a no-op and costs nothing).
+        try:
+            import torch
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
         _push_progress(job_id, 2, "Diarize", f"Done — {len(segments)} segment(s)")
 
         # Stage 3 — Transcription
