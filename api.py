@@ -33,10 +33,14 @@ GPU constraint
 from __future__ import annotations
 
 import asyncio
+import gc
 import glob as _glob
 import json
 import os
 import shutil
+import threading
+import time
+import traceback
 import uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -46,7 +50,9 @@ from typing import Optional
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 
 from config import VALID_CONTEXTS, Settings, settings
 
@@ -55,6 +61,17 @@ from config import VALID_CONTEXTS, Settings, settings
 _default_settings: dict = {}
 
 from stages import diarize, export, preprocess, report, transcribe
+
+
+# ---------------------------------------------------------------------------
+# Thread exception hook — keeps uvicorn alive if a pipeline thread crashes
+# ---------------------------------------------------------------------------
+
+def _handle_thread_exception(args: threading.ExceptHookArgs) -> None:
+    print(f"[error] Unhandled thread exception: {args.exc_value}")
+    traceback.print_exception(args.exc_type, args.exc_value, args.exc_tb)
+
+threading.excepthook = _handle_thread_exception
 
 
 # ---------------------------------------------------------------------------
@@ -84,9 +101,25 @@ app = FastAPI(title="Call Analysis Pipeline API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+
+class CORSFallbackMiddleware(BaseHTTPMiddleware):
+    """Explicitly stamps CORS headers on every response as a belt-and-suspenders
+    fallback for proxies (e.g. ngrok) that may strip or rewrite headers."""
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        return response
+
+
+app.add_middleware(CORSFallbackMiddleware)
 
 
 # ---------------------------------------------------------------------------
@@ -268,14 +301,18 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
         )
         if settings.speaker_names:
             segments = _apply_speaker_names(segments, settings.speaker_names)
-        # Belt-and-suspenders: flush any VRAM the diarization pipeline left behind
-        # before Stage 3 loads Whisper (diarize.run already does this internally,
-        # but a second call is a no-op and costs nothing).
+        # Force VRAM to clear fully before Stage 3 loads Whisper.
+        # diarize.run() does this internally, but a synchronize + double flush
+        # ensures all CUDA ops have actually completed before the cache is freed.
         try:
             import torch
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            gc.collect()
             torch.cuda.empty_cache()
         except Exception:
             pass
+        time.sleep(2)
         _push_progress(job_id, 2, "Diarize", f"Done — {len(segments)} segment(s)")
 
         # Stage 3 — Transcription
@@ -347,9 +384,10 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
         job["files"] = files
         _push_complete(job_id)
 
-    except Exception as exc:
+    except BaseException as exc:
         job["status"] = "error"
         job["error"] = str(exc)
+        print(f"[error] Pipeline crashed: {traceback.format_exc()}")
         _push_error(job_id, str(exc))
 
 
@@ -424,15 +462,28 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
         job["files"] = files
         _push_complete(job_id)
 
-    except Exception as exc:
+    except BaseException as exc:
         job["status"] = "error"
         job["error"] = str(exc)
+        print(f"[error] Report-from-JSON crashed: {traceback.format_exc()}")
         _push_error(job_id, str(exc))
 
 
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+@app.options("/{path:path}")
+async def options_handler(path: str):
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        },
+    )
+
 
 @app.get("/health")
 async def health():
