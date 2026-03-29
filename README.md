@@ -69,6 +69,7 @@ output/
 
 - Python 3.9+ (tested on 3.11)
 - `ffmpeg` on your PATH
+- [ngrok](https://ngrok.com/) (optional — only needed to expose the API server to a browser frontend)
 
 **Install ffmpeg:**
 - macOS: `brew install ffmpeg`
@@ -238,11 +239,48 @@ UserWarning: torchcodec is not installed correctly so built-in audio decoding wi
 
 **Harmless.** The pipeline passes audio to pyannote as a pre-loaded in-memory waveform, so `torchcodec` is never used. The warning is suppressed in the code.
 
+## Running the API server
+
+`api.py` exposes the pipeline over HTTP + WebSocket so frontends can drive it programmatically:
+
+```bash
+# Install additional API dependencies
+pip install fastapi uvicorn python-multipart
+
+# Start the server
+uvicorn api:app --host 0.0.0.0 --port 8000
+```
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check |
+| POST | `/analyse` | Upload audio, start pipeline; returns `job_id` |
+| POST | `/report-from-json` | Upload transcript JSON, run Stage 5 only; returns `job_id` |
+| GET | `/status/{job_id}` | Poll job status |
+| GET | `/reconnect/{job_id}` | Full job state recovery (transcript + report + metadata) |
+| GET | `/download/{job_id}/{type}` | Download output — `type` ∈ `txt`, `json`, `report`, `wav` |
+| WS | `/ws/{job_id}` | WebSocket — real-time progress, `complete` message on finish |
+
+Jobs run one at a time (GPU constraint). All outputs land in `output/jobs/{job_id}/`. Job state is persisted to disk so the server can recover it after a restart.
+
+## Exposing via ngrok
+
+To make the API reachable from a browser (e.g. a deployed frontend):
+
+```bash
+ngrok http 8000
+```
+
+ngrok's free tier drops idle WebSocket connections after ~30 s. The API handles this with:
+- A **heartbeat thread** during Stage 5 — sends a progress ping every 10 s to keep the WebSocket alive during the Gemini API call
+- A **`/reconnect/{job_id}` endpoint** — returns the full job state so clients can recover without re-processing
+
 ## Project structure
 
 ```
 call-analysis-pipeline/
-├── main.py               # Entry point — runs the full pipeline
+├── main.py               # Entry point — runs the full pipeline (CLI)
+├── api.py                # FastAPI HTTP + WebSocket wrapper
 ├── config.py             # Loads .env, exposes typed settings
 ├── stages/
 │   ├── preprocess.py     # Stage 1: noise reduction + normalization

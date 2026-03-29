@@ -185,7 +185,60 @@ Peak RAM stays at ~350 MB regardless of recording length.
 
 **Conclusion:** Accurate mode scales linearly with segment count. Stage 2 is sublinear (pyannote processes audio in batches that amortise well). There is no hard ceiling for file length — the pipeline will complete in approximately real-time on a GTX 1650 for any length recording.
 
-## 12. google-generativeai is deprecated — use google-genai instead
+## 12. Windows-specific issues
+
+A collection of issues that only manifest on Windows or in Windows-hosted GPU environments.
+
+### ctranslate2 CUDA teardown calls exit() on garbage collection
+
+**Problem:** When `WhisperModel` is garbage-collected mid-process on Windows, ctranslate2's `__del__` calls `exit()`, crashing the server.
+
+**Fix:** Keep a module-level reference in `transcribe.py`:
+```python
+_active_model = None  # module-level
+# inside run():
+model = WhisperModel(...)
+_active_model = model  # prevents GC
+```
+Do not add `del model` anywhere inside `transcribe.run()`.
+
+In `api.py` this is compounded because pipeline jobs run in background threads. `BaseException` (not just `Exception`) is caught in pipeline threads because `SystemExit` from ctranslate2 is a `BaseException` subclass. `threading.excepthook` is also installed so any uncaught thread crash prints a traceback without killing uvicorn.
+
+### CUDA memory not released between Stage 2 and Stage 3
+
+**Problem:** pyannote and Whisper together exceed 4 GB VRAM. After `diarize.run()` finishes, enough VRAM remains allocated from pyannote that `WhisperModel` fails to initialise.
+
+**Fix:** At the end of `diarize.run()`, move the pipeline off GPU and explicitly clear the cache:
+```python
+pipeline.to(torch.device("cpu"))
+del pipeline, diarization, annotation
+torch.cuda.empty_cache()
+gc.collect()
+```
+
+In `api.py`, an additional cleanup step is performed in the pipeline thread after `diarize.run()` returns and before `transcribe.run()` is called:
+```python
+torch.cuda.synchronize()
+torch.cuda.empty_cache()
+gc.collect()
+torch.cuda.empty_cache()
+time.sleep(2)
+```
+The `sleep(2)` gives the CUDA driver time to process the deallocation before the new model is loaded.
+
+### torchaudio not needed — use soundfile instead
+
+**Problem:** `torchaudio` was listed as a dependency for audio loading but caused version conflicts on Windows (requires a matching `torch` build; CPU wheel indices differ between torchaudio and torch).
+
+**Fix:** Load audio with `soundfile.read()` instead of any torchaudio API. `soundfile` is pure Python / libsndfile and has no torch version coupling. See Learning #4.
+
+### numpy 2.x breaks pyannote on Windows pip installs
+
+See Learning #3. On Windows, `pip install -r requirements.txt` without pre-installing torch tends to resolve to the latest torch, which triggers a numpy 2.x upgrade that breaks pyannote. The explicit install order (torch first, then numpy pin, then requirements) is especially important on Windows where pip caching behaviour differs from Linux.
+
+---
+
+## 13. google-generativeai is deprecated — use google-genai instead
 
 **Problem:** `import google.generativeai` emitted a `FutureWarning` stating that all support for the `google.generativeai` package has ended and it will no longer receive updates or bug fixes.
 
