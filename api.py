@@ -198,6 +198,7 @@ def get_or_recover_job(job_id: str) -> Optional[dict]:
         "progress_message": None,
         "transcript": None,
         "metadata": {},
+        "report_path": report_files[0] if report_files else None,
         "report": None,
         "error": None,
     }
@@ -214,10 +215,9 @@ def get_or_recover_job(job_id: str) -> Optional[dict]:
             pass
 
     # Hydrate report text
-    report_path = files.get("report")
-    if report_path and os.path.isfile(report_path):
+    if recovered["report_path"] and os.path.isfile(recovered["report_path"]):
         try:
-            with open(report_path, encoding="utf-8") as f:
+            with open(recovered["report_path"], encoding="utf-8") as f:
                 recovered["report"] = f.read()
         except Exception:
             pass
@@ -274,6 +274,15 @@ def _push_error(job_id: str, message: str) -> None:
 # ---------------------------------------------------------------------------
 # Pipeline threads
 # ---------------------------------------------------------------------------
+
+def _heartbeat_worker(job_id: str, stop: threading.Event, interval: float = 10.0) -> None:
+    """Send periodic progress pings during Stage 5 to keep the WebSocket alive.
+
+    Stage 5 (Gemini API) can take 30–60 s. Without pings the WebSocket proxy
+    (ngrok, nginx) times out the idle connection before the report arrives.
+    """
+    while not stop.wait(interval):
+        _push_progress(job_id, 5, "AI Report", "Stage 5: Generating analysis report...")
 
 def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
     """Run the full pipeline (Stages 1–4, optionally 5). Executes in the thread pool."""
@@ -351,9 +360,11 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
         files: dict = {"transcript": txt_path, "json": json_path, "clean_wav": clean_wav}
 
         # Stage 5 — Report (optional)
+        # _push_complete is called ONLY after this block so the "complete"
+        # message always carries the finished report content.
         if params.get("report"):
             settings.validate_for_report()
-            _push_progress(job_id, 5, "Report", "Generating Gemini analysis report…")
+            _push_progress(job_id, 5, "AI Report", "Stage 5: Generating analysis report...")
             speaker_counts = Counter(s["speaker"] for s in transcribed_segments)
             try:
                 import soundfile as _sf
@@ -361,24 +372,37 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
                 audio_duration: Optional[float] = _info.frames / _info.samplerate
             except Exception:
                 audio_duration = None
-            report_path = report.run(
-                segments=transcribed_segments,
-                source_file=input_path,
-                output_dir=output_dir,
-                context=settings.context,
-                num_speakers=len(speaker_counts),
-                audio_duration=audio_duration,
-                speaker_counts=dict(speaker_counts),
-                api_key=settings.gemini_api_key,
-                prompts_dir="prompts",
+
+            # Heartbeat keeps the WebSocket alive during the Gemini API call
+            _stop_hb = threading.Event()
+            _hb = threading.Thread(
+                target=_heartbeat_worker, args=(job_id, _stop_hb), daemon=True
             )
+            _hb.start()
+            try:
+                report_path = report.run(
+                    segments=transcribed_segments,
+                    source_file=input_path,
+                    output_dir=output_dir,
+                    context=settings.context,
+                    num_speakers=len(speaker_counts),
+                    audio_duration=audio_duration,
+                    speaker_counts=dict(speaker_counts),
+                    api_key=settings.gemini_api_key,
+                    prompts_dir="prompts",
+                )
+            finally:
+                _stop_hb.set()
+                _hb.join(timeout=1)
+
+            job["report_path"] = report_path
             try:
                 with open(report_path, encoding="utf-8") as f:
                     job["report"] = f.read()
             except Exception:
                 pass
             files["report"] = report_path
-            _push_progress(job_id, 5, "Report", "Done")
+            _push_progress(job_id, 5, "AI Report", "Done")
 
         job["status"] = "complete"
         job["files"] = files
@@ -432,23 +456,35 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
             files["json"] = relabelled
 
         settings.validate_for_report()
-        _push_progress(job_id, 5, "Report", "Generating Gemini analysis report…")
+        _push_progress(job_id, 5, "AI Report", "Stage 5: Generating analysis report...")
         speaker_counts = Counter(s["speaker"] for s in transcribed_segments)
         audio_duration = max((s["end"] for s in transcribed_segments), default=None)
 
-        report_path = report.run(
-            segments=transcribed_segments,
-            source_file=json_source_file,
-            output_dir=output_dir,
-            context=settings.context,
-            num_speakers=len(speaker_counts),
-            audio_duration=audio_duration,
-            speaker_counts=dict(speaker_counts),
-            api_key=settings.gemini_api_key,
-            prompts_dir="prompts",
+        # Heartbeat keeps the WebSocket alive during the Gemini API call
+        _stop_hb = threading.Event()
+        _hb = threading.Thread(
+            target=_heartbeat_worker, args=(job_id, _stop_hb), daemon=True
         )
-        _push_progress(job_id, 5, "Report", "Done")
+        _hb.start()
+        try:
+            report_path = report.run(
+                segments=transcribed_segments,
+                source_file=json_source_file,
+                output_dir=output_dir,
+                context=settings.context,
+                num_speakers=len(speaker_counts),
+                audio_duration=audio_duration,
+                speaker_counts=dict(speaker_counts),
+                api_key=settings.gemini_api_key,
+                prompts_dir="prompts",
+            )
+        finally:
+            _stop_hb.set()
+            _hb.join(timeout=1)
 
+        _push_progress(job_id, 5, "AI Report", "Done")
+
+        job["report_path"] = report_path
         try:
             with open(report_path, encoding="utf-8") as f:
                 job["report"] = f.read()
@@ -538,6 +574,7 @@ async def analyse(
         "progress_message": None,
         "transcript": None,
         "metadata": {},
+        "report_path": None,
         "report": None,
         "error": None,
         "output_dir": job_dir,
