@@ -703,48 +703,38 @@ async def download(job_id: str, file_type: str):
     job = get_or_recover_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job["status"] != "complete":
-        raise HTTPException(status_code=409, detail="Job not complete")
 
-    job_dir = job.get("output_dir", f"output/jobs/{job_id}")
-    files = job.get("files", {})
+    job_dir = f"output/jobs/{job_id}"
 
-    # The files dict may use different key names than the URL type
-    # (e.g. "transcript" vs "txt", "clean_wav" vs "wav"), so fall back
-    # to a glob scan of the job directory for each type.
-    if file_type == "report":
-        path = files.get("report") or job.get("report_path")
-        if not path or not os.path.isfile(path):
-            candidates = _glob.glob(os.path.join(job_dir, "*_report.md"))
-            path = candidates[0] if candidates else None
-        if not path or not os.path.isfile(path):
-            raise HTTPException(status_code=404, detail="Report not available for this job")
-        return FileResponse(path, filename=os.path.basename(path), media_type="text/markdown")
-    elif file_type in ("txt", "transcript"):
-        path = files.get("txt") or files.get("transcript")
-        if not path or not os.path.isfile(path):
-            candidates = _glob.glob(os.path.join(job_dir, "*.txt"))
-            path = candidates[0] if candidates else None
+    if file_type in ("txt", "transcript"):
+        candidates = [f for f in _glob.glob(os.path.join(job_dir, "*.txt")) if "report" not in f]
+        file_path = candidates[0] if candidates else None
+        media_type = "text/plain"
     elif file_type == "json":
-        path = files.get("json")
-        if not path or not os.path.isfile(path):
+        named = _glob.glob(os.path.join(job_dir, "transcript_named.json"))
+        if named:
+            file_path = named[0]
+        else:
             candidates = [
                 f for f in _glob.glob(os.path.join(job_dir, "*.json"))
-                if os.path.basename(f) not in ("transcript.json",)
-                and not os.path.basename(f).startswith("input")
+                if "input" not in os.path.basename(f) and "named" not in os.path.basename(f)
             ]
-            path = candidates[0] if candidates else None
+            file_path = candidates[0] if candidates else None
+        media_type = "application/json"
+    elif file_type == "report":
+        candidates = _glob.glob(os.path.join(job_dir, "*_report.md"))
+        file_path = candidates[0] if candidates else None
+        media_type = "text/markdown"
     elif file_type == "wav":
-        path = files.get("wav") or files.get("clean_wav")
-        if not path or not os.path.isfile(path):
-            candidates = _glob.glob(os.path.join(job_dir, "*_clean.wav"))
-            path = candidates[0] if candidates else None
+        candidates = _glob.glob(os.path.join(job_dir, "*_clean.wav"))
+        file_path = candidates[0] if candidates else None
+        media_type = "audio/wav"
     else:
-        raise HTTPException(status_code=400, detail=f"Unknown file type '{file_type}'. Use: transcript, json, report, wav")
+        raise HTTPException(status_code=400, detail="Unknown file type. Use: transcript, json, report, wav")
 
-    if not path or not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail=f"File type '{file_type}' not available for this job")
-    return FileResponse(path, filename=os.path.basename(path))
+    if not file_path or not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="File not ready yet")
+    return FileResponse(file_path, filename=os.path.basename(file_path), media_type=media_type)
 
 
 @app.websocket("/ws/{job_id}")
