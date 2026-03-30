@@ -707,7 +707,7 @@ async def download(job_id: str, file_type: str):
     job_dir = f"output/jobs/{job_id}"
 
     if file_type in ("txt", "transcript"):
-        candidates = [f for f in _glob.glob(os.path.join(job_dir, "*.txt")) if "report" not in f]
+        candidates = [f for f in _glob.glob(os.path.join(job_dir, "*.txt")) if "_report" not in f]
         file_path = candidates[0] if candidates else None
         media_type = "text/plain"
     elif file_type == "json":
@@ -717,7 +717,7 @@ async def download(job_id: str, file_type: str):
         else:
             candidates = [
                 f for f in _glob.glob(os.path.join(job_dir, "*.json"))
-                if "input" not in os.path.basename(f) and "named" not in os.path.basename(f)
+                if "named" not in os.path.basename(f)
             ]
             file_path = candidates[0] if candidates else None
         media_type = "application/json"
