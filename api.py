@@ -717,7 +717,7 @@ async def download(job_id: str, file_type: str):
         if not path or not os.path.isfile(path):
             candidates = _glob.glob(os.path.join(job_dir, "*_report.md"))
             path = candidates[0] if candidates else None
-    elif file_type == "txt":
+    elif file_type in ("txt", "transcript"):
         path = files.get("txt") or files.get("transcript")
         if not path or not os.path.isfile(path):
             candidates = _glob.glob(os.path.join(job_dir, "*.txt"))
@@ -737,7 +737,7 @@ async def download(job_id: str, file_type: str):
             candidates = _glob.glob(os.path.join(job_dir, "*_clean.wav"))
             path = candidates[0] if candidates else None
     else:
-        raise HTTPException(status_code=400, detail=f"Unknown file type '{file_type}'. Use: txt, json, report, wav")
+        raise HTTPException(status_code=400, detail=f"Unknown file type '{file_type}'. Use: transcript, json, report, wav")
 
     if not path or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail=f"File type '{file_type}' not available for this job")
