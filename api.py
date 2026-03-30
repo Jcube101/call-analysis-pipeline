@@ -717,6 +717,9 @@ async def download(job_id: str, file_type: str):
         if not path or not os.path.isfile(path):
             candidates = _glob.glob(os.path.join(job_dir, "*_report.md"))
             path = candidates[0] if candidates else None
+        if not path or not os.path.isfile(path):
+            raise HTTPException(status_code=404, detail="Report not available for this job")
+        return FileResponse(path, filename=os.path.basename(path), media_type="text/markdown")
     elif file_type in ("txt", "transcript"):
         path = files.get("txt") or files.get("transcript")
         if not path or not os.path.isfile(path):
