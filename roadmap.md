@@ -86,8 +86,12 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 ### API / Integration
 
 - [x] **FastAPI wrapper** — `api.py` exposes the full pipeline over HTTP + WebSocket with job management, real-time progress via WebSocket, message queue replay on reconnect, and disk-based job recovery after server restart
-- [x] **Frontend integration** — job-joseph.com web frontend consumes the API; uploads audio, tracks pipeline progress via WebSocket, displays transcript and AI report on completion
+- [x] **Frontend integration** — job-joseph.com/projects/call-analysis web frontend consumes the API; uploads audio, tracks pipeline progress via WebSocket, displays transcript and AI report on completion with working download buttons
 - [x] **CORS + ngrok support** — three-layer CORS setup handles ngrok headers; heartbeat thread during Stage 5 keeps WebSocket alive across ngrok's 30 s idle timeout; `/reconnect/{job_id}` endpoint for client-side state recovery
+- [x] **Download endpoints** — all four file types (`transcript`, `json`, `report`, `wav`) served directly from disk with correct `Content-Type` and `Content-Disposition` headers; named JSON takes priority over generic JSON; no job status check required
+- [x] **generate_report flag threading fix** — flag stored explicitly in job dict to survive background thread handoff; explicit `bool()` cast handles string form values
+- [x] **Job disk recovery** — server restart does not lose job state; files persist in `output/jobs/{job_id}/` and are served directly from disk
+- [x] **Markdown report rendered in browser UI** — frontend renders `.md` report content correctly
 
 ### Usability
 
@@ -105,11 +109,10 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 
 ---
 
-## v1.1 — Frontend fixes (in progress)
+## v1.1 — Frontend polish (in progress)
 
-- [ ] **Markdown rendering** — render AI report content in the browser instead of displaying raw Markdown text
-- [ ] **Download buttons** — wire up download links for transcript (.txt), JSON, report (.md), and clean audio (.wav) from the frontend
-- [ ] **Full report display** — show the complete AI report text in the frontend UI (currently truncated)
+- [ ] **WebSocket reconnect** — automatic reconnect after ngrok timeout without requiring a page refresh
+- [ ] **Live tab redesign** — full pipeline options visible, advanced settings in collapsible panel, form state persisted to localStorage
 
 ---
 

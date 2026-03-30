@@ -252,3 +252,79 @@ return response.text
 ```
 
 **Note:** `google-generativeai` and `google-genai` are separate packages with different import paths (`google.generativeai` vs `google.genai`) and different client patterns. Do not mix them.
+
+---
+
+## 14. FastAPI + threading gotchas
+
+### Form booleans must be cast and stored explicitly
+
+FastAPI's `bool = Form(False)` parses HTML form values correctly in most cases, but values routed through background threads can lose type information. Store flag values explicitly on the job dict with an explicit cast:
+
+```python
+jobs[job_id]["generate_report"] = bool(generate_report)
+```
+
+Then in the background thread, read from job state rather than function arguments:
+
+```python
+generate_report = bool(job.get("generate_report", False))
+```
+
+This also handles any string residue (`"true"`, `"1"`) that survives form parsing.
+
+### Background thread crashes kill uvicorn unless excepthook is set
+
+Python's default `threading.excepthook` re-raises uncaught exceptions, which terminates the entire process. Install a custom hook at module level to log crashes without killing the server:
+
+```python
+def _handle_thread_exception(args: threading.ExceptHookArgs) -> None:
+    print(f"[error] Unhandled thread exception: {args.exc_value}")
+    traceback.print_exception(args.exc_type, args.exc_value, args.exc_tb)
+
+threading.excepthook = _handle_thread_exception
+```
+
+### WebSocket messages from background threads require run_coroutine_threadsafe
+
+Background CPU threads cannot call `await websocket.send_json()` directly. Use the event loop captured at startup:
+
+```python
+future = asyncio.run_coroutine_threadsafe(ws.send_json(payload), _loop)
+future.result(timeout=5)  # confirm delivery or time out
+```
+
+### CUDA memory must be freed between pyannote and Whisper
+
+See Learning #12 (Windows-specific issues). The pattern `synchronize() + empty_cache() + gc.collect() + empty_cache() + sleep(2)` between Stage 2 and Stage 3 is required in the API server's background thread, not just in `diarize.run()` itself.
+
+---
+
+## 15. Windows file path gotchas in glob patterns
+
+### Never filter on "input" in filenames — all output files start with "input_"
+
+When `api.py` processes an uploaded file it saves it as `input.{ext}` and all output files are named with that stem:
+
+```
+input_clean.wav
+input_20260331_014537.txt
+input_20260331_014537.json
+input_20260331_014548_report.md
+```
+
+Filtering glob results with `"input" not in filename` removes **every** output file. Filter by specific suffixes instead:
+- Exclude `_report` from txt results (to avoid hypothetical `*_report.txt` files)
+- Exclude `named` from json results (to separate `transcript_named.json` from timestamped JSON)
+
+### Glob patterns must use os.path.join or forward slashes
+
+On Windows, `glob.glob("output\\jobs\\{job_id}\\*.txt")` silently returns no results because the glob module expects forward slashes. Use `os.path.join()`:
+
+```python
+candidates = glob.glob(os.path.join("output", "jobs", job_id, "*.txt"))
+```
+
+### Content-Disposition header must be set for correct browser filename
+
+`FileResponse(path)` without `filename=` lets the browser infer the filename from the URL path (e.g. `/download/{job_id}/report`), which it saves as `report` with no extension. Always pass `filename=os.path.basename(path)` so the browser saves with the correct extension (`.txt`, `.json`, `.md`, `.wav`).

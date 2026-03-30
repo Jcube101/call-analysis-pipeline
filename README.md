@@ -241,15 +241,27 @@ UserWarning: torchcodec is not installed correctly so built-in audio decoding wi
 
 ## Running the API server
 
-`api.py` exposes the pipeline over HTTP + WebSocket so frontends can drive it programmatically:
+`api.py` exposes the pipeline over HTTP + WebSocket.
 
+Install the additional dependencies once:
 ```bash
-# Install additional API dependencies
 pip install fastapi uvicorn python-multipart
-
-# Start the server
-uvicorn api:app --host 0.0.0.0 --port 8000
 ```
+
+Start the full stack in two terminals:
+
+**Terminal 1 — API server:**
+```bash
+cd call-analysis-pipeline
+python api.py
+```
+
+**Terminal 2 — ngrok tunnel:**
+```bash
+ngrok http 8000
+```
+
+Then paste the ngrok URL into the Backend URL field at **job-joseph.com/projects/call-analysis**.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -258,10 +270,26 @@ uvicorn api:app --host 0.0.0.0 --port 8000
 | POST | `/report-from-json` | Upload transcript JSON, run Stage 5 only; returns `job_id` |
 | GET | `/status/{job_id}` | Poll job status |
 | GET | `/reconnect/{job_id}` | Full job state recovery (transcript + report + metadata) |
-| GET | `/download/{job_id}/{type}` | Download output — `type` ∈ `txt`, `json`, `report`, `wav` |
+| GET | `/download/{job_id}/transcript` | Download `.txt` transcript |
+| GET | `/download/{job_id}/json` | Download transcript JSON |
+| GET | `/download/{job_id}/report` | Download `.md` report |
+| GET | `/download/{job_id}/wav` | Download clean audio |
 | WS | `/ws/{job_id}` | WebSocket — real-time progress, `complete` message on finish |
 
 Jobs run one at a time (GPU constraint). All outputs land in `output/jobs/{job_id}/`. Job state is persisted to disk so the server can recover it after a restart.
+
+## Download endpoints
+
+Once a job completes, all output files are downloadable:
+
+```
+GET /download/{job_id}/transcript  →  .txt transcript
+GET /download/{job_id}/json        →  .json transcript (named JSON takes priority if present)
+GET /download/{job_id}/report      →  .md AI report
+GET /download/{job_id}/wav         →  clean audio (.wav)
+```
+
+Files are served directly from disk — no status check required. The server can be restarted and downloads still work as long as `output/jobs/{job_id}/` exists.
 
 ## Exposing via ngrok
 
