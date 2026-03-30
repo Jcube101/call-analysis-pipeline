@@ -360,9 +360,13 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
         files: dict = {"transcript": txt_path, "json": json_path, "clean_wav": clean_wav}
 
         # Stage 5 — Report (optional)
+        # Read from job state (authoritative) with explicit bool cast so that
+        # string values like "true"/"1" from form parsing are handled correctly.
         # _push_complete is called ONLY after this block so the "complete"
         # message always carries the finished report content.
-        if params.get("report"):
+        generate_report = bool(job.get("generate_report", False))
+        print(f"[debug] generate_report={generate_report}, running Stage 5: {generate_report}")
+        if generate_report:
             settings.validate_for_report()
             _push_progress(job_id, 5, "AI Report", "Stage 5: Generating analysis report...")
             speaker_counts = Counter(s["speaker"] for s in transcribed_segments)
@@ -535,7 +539,7 @@ async def analyse(
     language: Optional[str] = Form(None),
     speaker_names: Optional[str] = Form(None),
     word_timestamps: Optional[bool] = Form(None),
-    report: bool = Form(False),
+    generate_report: bool = Form(False),
     skip_preprocess: bool = Form(False),
     whisper_model: Optional[str] = Form(None),
 ):
@@ -560,7 +564,7 @@ async def analyse(
         "language": language,
         "speaker_names": parsed_names,
         "word_timestamps": word_timestamps,
-        "report": report,
+        "generate_report": bool(generate_report),
         "skip_preprocess": skip_preprocess,
         "whisper_model": whisper_model,
     }
@@ -568,6 +572,7 @@ async def analyse(
     jobs[job_id] = {
         "status": "queued",
         "params": params,
+        "generate_report": bool(generate_report),
         "message_queue": [],
         "current_stage": None,
         "stage_name": None,
