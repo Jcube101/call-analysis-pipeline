@@ -659,6 +659,27 @@ async def reconnect(job_id: str):
     job = get_or_recover_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
+
+    # If report content isn't cached in memory, try to read it from disk.
+    # This covers the case where the server restarted after Stage 5 completed,
+    # or where the file read failed silently during the pipeline run.
+    report = job.get("report")
+    if not report:
+        report_path = job.get("report_path")
+        if not report_path:
+            job_dir = job.get("output_dir", f"output/jobs/{job_id}")
+            candidates = _glob.glob(os.path.join(job_dir, "*_report.md"))
+            if candidates:
+                report_path = candidates[0]
+                job["report_path"] = report_path
+        if report_path and os.path.isfile(report_path):
+            try:
+                with open(report_path, encoding="utf-8") as f:
+                    report = f.read()
+                    job["report"] = report  # cache for subsequent calls
+            except Exception:
+                pass
+
     return {
         "status": job.get("status"),
         "current_stage": job.get("current_stage"),
@@ -666,7 +687,7 @@ async def reconnect(job_id: str):
         "progress_message": job.get("progress_message"),
         "message_queue": job.get("message_queue", []),
         "transcript": job.get("transcript"),
-        "report": job.get("report"),
+        "report": report,
         "metadata": job.get("metadata", {}),
         "error": job.get("error"),
     }
@@ -679,8 +700,40 @@ async def download(job_id: str, file_type: str):
         raise HTTPException(status_code=404, detail="Job not found")
     if job["status"] != "complete":
         raise HTTPException(status_code=409, detail="Job not complete")
+
+    job_dir = job.get("output_dir", f"output/jobs/{job_id}")
     files = job.get("files", {})
-    path = files.get(file_type)
+
+    # The files dict may use different key names than the URL type
+    # (e.g. "transcript" vs "txt", "clean_wav" vs "wav"), so fall back
+    # to a glob scan of the job directory for each type.
+    if file_type == "report":
+        path = files.get("report") or job.get("report_path")
+        if not path or not os.path.isfile(path):
+            candidates = _glob.glob(os.path.join(job_dir, "*_report.md"))
+            path = candidates[0] if candidates else None
+    elif file_type == "txt":
+        path = files.get("txt") or files.get("transcript")
+        if not path or not os.path.isfile(path):
+            candidates = _glob.glob(os.path.join(job_dir, "*.txt"))
+            path = candidates[0] if candidates else None
+    elif file_type == "json":
+        path = files.get("json")
+        if not path or not os.path.isfile(path):
+            candidates = [
+                f for f in _glob.glob(os.path.join(job_dir, "*.json"))
+                if os.path.basename(f) not in ("transcript.json",)
+                and not os.path.basename(f).startswith("input")
+            ]
+            path = candidates[0] if candidates else None
+    elif file_type == "wav":
+        path = files.get("wav") or files.get("clean_wav")
+        if not path or not os.path.isfile(path):
+            candidates = _glob.glob(os.path.join(job_dir, "*_clean.wav"))
+            path = candidates[0] if candidates else None
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown file type '{file_type}'. Use: txt, json, report, wav")
+
     if not path or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail=f"File type '{file_type}' not available for this job")
     return FileResponse(path, filename=os.path.basename(path))
