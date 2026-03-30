@@ -12,9 +12,7 @@ Takes an audio recording of a two-person conversation (MP3, M4A, WAV, or any ffm
 
 ## Status
 
-**v1.0 is fully functional and tested end-to-end with GPU acceleration** on real call recordings (GTX 1650, CUDA 12.1, Windows 11, Python 3.11). Tested on files up to 2h40m in length. Includes speaker re-identification, speaker name mapping, and a FastAPI HTTP+WebSocket wrapper (`api.py`). A web frontend at job-joseph.com consumes the API. Pipeline runs at approximately 1x real-time; no hard ceiling on file length.
-
-**Known issue:** ngrok free tier drops idle WebSocket connections after ~30 s. The API addresses this with a heartbeat thread during Stage 5 and a `/reconnect/{job_id}` endpoint for client-side state recovery.
+Full pipeline v1.0 complete and tested. FastAPI wrapper operational with WebSocket progress updates. Frontend deployed at job-joseph.com/projects/call-analysis. All download endpoints working correctly.
 
 ## How to run
 
@@ -65,6 +63,9 @@ output/          — pipeline outputs land here (gitignored, must exist locally)
 - **Windows compatibility** — avoid Unix-only shell commands or hardcoded `/` paths; use `os.path` instead.
 - **No chunking yet** — large file support is deferred, but don't architect it out. Keep it in mind when touching Stage 1 or 3.
 - **Error handling** — each stage call in `main.py` is wrapped in try/except. Failures print `[error] Stage N (name) failed: <message>` and exit with code 1.
+- **`generate_report` flag** must be stored explicitly on the job dict as `job["generate_report"] = bool(generate_report)` when the job is created — do not rely on function arguments alone as the value can be lost between threads.
+- **Download endpoints use glob patterns** to find files by type — do not filter out files with `"input"` in the name as all timestamped output files start with `input_`. Filter by specific suffixes instead (`_report`, `_named`).
+- **txt glob** excludes `"_report"` to avoid matching report files; **json glob** excludes `"named"` to avoid matching `transcript_named.json` as the fallback (named JSON takes priority over generic JSON).
 
 ## Output file naming
 
@@ -191,8 +192,26 @@ Requires `fastapi`, `uvicorn`, `python-multipart` (not in `requirements.txt` —
 | POST | `/report-from-json` | Upload transcript JSON, run Stage 5 only; returns `job_id` |
 | GET | `/status/{job_id}` | Poll current job status and stage |
 | GET | `/reconnect/{job_id}` | Full job state recovery (transcript + report + metadata) |
-| GET | `/download/{job_id}/{type}` | Download output file; `type` ∈ `txt`, `json`, `report`, `wav` |
+| GET | `/download/{job_id}/transcript` | Download `.txt` transcript |
+| GET | `/download/{job_id}/json` | Download transcript JSON (`transcript_named.json` if exists, else timestamped `.json`) |
+| GET | `/download/{job_id}/report` | Download `*_report.md` file |
+| GET | `/download/{job_id}/wav` | Download `*_clean.wav` file |
 | WS | `/ws/{job_id}` | WebSocket — real-time progress, final `complete` message |
+
+Download endpoints serve directly from disk with no job status check — files are returned as soon as they exist on disk regardless of in-memory job state. The `Content-Disposition` header carries the original filename so browsers save with the correct extension.
+
+### Job folder file naming
+
+All output files from `api.py` use the uploaded filename stem (`input`) plus a timestamp:
+```
+output/jobs/{job_id}/
+├── input.{ext}                      — uploaded audio
+├── input_clean.wav                  — Stage 1 output
+├── input_{YYYYMMDD_HHMMSS}.txt      — Stage 4 transcript
+├── input_{YYYYMMDD_HHMMSS}.json     — Stage 4 JSON
+├── transcript_named.json            — relabelled JSON (report-from-json with speaker names)
+└── input_{YYYYMMDD_HHMMSS}_report.md — Stage 5 report
+```
 
 ### Job model
 
@@ -252,10 +271,7 @@ A web frontend at job-joseph.com consumes the API. It connects to the ngrok-expo
 
 **ngrok reconnect flow:** If the WebSocket drops (ngrok free tier timeout), the client calls `GET /reconnect/{job_id}` to retrieve the full job state and resume display without re-processing.
 
-**Known v1.1 issues (in progress):**
-- Report content displayed as raw Markdown (browser does not render it)
-- Download buttons not yet wired up
-- Full report text truncated in the complete message UI
+**v1.1 in progress:** WebSocket reconnect after ngrok timeout; Live tab redesign with full pipeline options, advanced settings collapsible, localStorage persistence.
 
 ## What NOT to commit
 

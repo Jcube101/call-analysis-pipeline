@@ -300,37 +300,52 @@ pip install -r requirements.txt
 
 ## REST API wrapper (api.py)
 
-`api.py` exposes the full pipeline over HTTP + WebSocket. It is separate from `main.py` and has no effect on CLI usage.
+`api.py` exposes the full pipeline over HTTP + WebSocket. It is separate from `main.py` and has no effect on CLI usage. Production-ready for local use; frontend at job-joseph.com/projects/call-analysis connects via ngrok tunnel.
 
 ### Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Server health check |
-| POST | `/analyse` | Multipart upload (audio file + JSON params); starts pipeline; returns `{"job_id": "..."}` |
+| POST | `/analyse` | Multipart upload (audio file + form params); starts pipeline; returns `{"job_id": "..."}` |
 | POST | `/report-from-json` | Multipart upload (transcript JSON); runs Stage 5 only; returns `{"job_id": "..."}` |
 | GET | `/status/{job_id}` | Returns `{"status": "...", "stage": "..."}` |
 | GET | `/reconnect/{job_id}` | Returns full job state: transcript, report, metadata, status |
-| GET | `/download/{job_id}/{type}` | Streams output file; `type` ∈ `txt`, `json`, `report`, `wav` |
+| GET | `/download/{job_id}/transcript` | `.txt` transcript file |
+| GET | `/download/{job_id}/json` | `transcript_named.json` if present, else timestamped `.json` |
+| GET | `/download/{job_id}/report` | `*_report.md` file (`text/markdown`) |
+| GET | `/download/{job_id}/wav` | `*_clean.wav` file (`audio/wav`) |
 | WS | `/ws/{job_id}` | WebSocket — progress messages, final `complete` payload |
 
-### Job lifecycle
+Download endpoints serve files directly from disk without checking job status — files are returned as soon as they exist.
 
-1. Client POSTs to `/analyse` → `job_id` returned immediately
-2. Client opens `WS /ws/{job_id}` → receives progress messages as each stage completes
-3. Pipeline completes → `{"type": "complete", "transcript": [...], "report": "...", "metadata": {...}}` sent over WS
-4. If WS drops (ngrok timeout), client calls `GET /reconnect/{job_id}` → full state returned for display
+### Full pipeline flow (frontend)
+
+1. User uploads audio at job-joseph.com/projects/call-analysis
+2. Frontend POSTs to `/analyse` with `generate_report=true` (if selected) → `job_id` returned
+3. Frontend opens `WS /ws/{job_id}` → receives progress messages per stage
+4. Pipeline completes → `{"type": "complete", "transcript": [...], "report": "...", "metadata": {...}}` sent
+5. Frontend displays transcript + rendered report; download buttons call `/download/{job_id}/{type}`
+6. If WS drops (ngrok timeout), frontend calls `GET /reconnect/{job_id}` → full state recovered
+
+### Report-from-JSON flow (frontend)
+
+1. User uploads existing `.json` transcript + optional speaker names
+2. Frontend POSTs to `/report-from-json` → `job_id` returned
+3. Stage 5 runs; heartbeat keeps WS alive during Gemini API call (30–60 s)
+4. `complete` message delivers rendered report; download button calls `/download/{job_id}/report`
 
 ### Output structure (API mode)
 
+All output files use the uploaded filename stem (`input`) plus a timestamp:
 ```
-output/
-└── jobs/
-    └── {job_id}/
-        ├── <name>_<timestamp>.txt
-        ├── <name>_<timestamp>.json      # includes "job_id" as first metadata key
-        ├── <name>_<timestamp>_report.md
-        └── <name>_clean.wav
+output/jobs/{job_id}/
+├── input.{ext}                        — uploaded audio
+├── input_clean.wav                    — Stage 1 output
+├── input_{YYYYMMDD_HHMMSS}.txt        — Stage 4 transcript
+├── input_{YYYYMMDD_HHMMSS}.json       — Stage 4 JSON (includes job_id in metadata)
+├── transcript_named.json              — relabelled JSON (report-from-json with speaker names)
+└── input_{YYYYMMDD_HHMMSS}_report.md  — Stage 5 report
 ```
 
 ### Threading and concurrency
