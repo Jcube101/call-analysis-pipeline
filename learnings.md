@@ -298,6 +298,35 @@ future.result(timeout=5)  # confirm delivery or time out
 
 See Learning #12 (Windows-specific issues). The pattern `synchronize() + empty_cache() + gc.collect() + empty_cache() + sleep(2)` between Stage 2 and Stage 3 is required in the API server's background thread, not just in `diarize.run()` itself.
 
+### Set all job state atomically before sending the complete message
+
+**Problem:** In `_run_report_from_json`, a `_push_progress("Done")` was sent before the report file was read, and the report file read used a bare `except Exception: pass`. If the file read failed silently, `job["report"]` stayed `None`. Even when the read succeeded, a client calling `/reconnect` between the progress push and the file read would see `report: null`.
+
+**Root cause:** Two compounding issues — premature "Done" progress notification, and silent error swallowing on the file read.
+
+**Fix:** Read the report file first (logging errors with `except Exception as e: print(...)` — never swallow silently), then set all job state fields as a single block before calling `_push_complete()`:
+
+```python
+try:
+    with open(report_path, encoding="utf-8") as f:
+        report_text = f.read()
+except Exception as e:
+    print(f"[error] Could not read report file: {e}")
+    report_text = None
+
+job["report"] = report_text
+job["report_path"] = report_path
+job["current_stage"] = 5
+job["stage_name"] = "AI Report"
+job["progress_message"] = "Done"
+job["status"] = "complete"
+_push_complete(job_id)
+```
+
+Do not call `_push_progress("Done")` before the file read — the complete message itself delivers the "Done" state.
+
+**`/reconnect` check:** Use `if report is None:` not `if not report:` when deciding whether to re-read from disk. An empty string report is valid and should not trigger a redundant disk read.
+
 ---
 
 ## 15. Windows file path gotchas in glob patterns
