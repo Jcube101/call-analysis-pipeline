@@ -328,3 +328,30 @@ candidates = glob.glob(os.path.join("output", "jobs", job_id, "*.txt"))
 ### Content-Disposition header must be set for correct browser filename
 
 `FileResponse(path)` without `filename=` lets the browser infer the filename from the URL path (e.g. `/download/{job_id}/report`), which it saves as `report` with no extension. Always pass `filename=os.path.basename(path)` so the browser saves with the correct extension (`.txt`, `.json`, `.md`, `.wav`).
+
+---
+
+## 16. Speaker diarization limitations on single-mic recordings
+
+### Majority vote smoothing fails for asymmetric conversations
+
+Majority vote smoothing (window=5) assumes speakers alternate roughly evenly. In an interview or boss/reportee dynamic where one speaker holds the floor for long stretches, the minority speaker's segments get outvoted into the majority speaker's label. The smoothing makes things worse, not better.
+
+**Mitigation:** Only apply majority vote smoothing to recordings known to have roughly balanced speaker time. For interviews, skip it or use a very small window (2–3 segments).
+
+### MFCC re-identification helps with label drift, not misattribution
+
+The MFCC clustering step is designed to fix *label drift* — the same physical voice being assigned `SPEAKER_00` in one chunk and `SPEAKER_01` in another on long recordings. It cannot reliably fix *short-segment misattribution* where a segment genuinely contains overlapping speech or a very brief interjection at a conversation boundary.
+
+### Single-mic vs stereo: a fundamental ceiling
+
+On a single-microphone recording both voices share the same acoustic channel. The diarization model must separate them purely from spectral features. Stereo recordings (one speaker per channel) allow per-channel processing and near-perfect separation. For portfolio demos and personal use, single-mic is fine — but document the limitation honestly.
+
+### Practical workflow for label flipping
+
+1. Run the full pipeline to get the transcript.
+2. Open the `.txt` file and identify which label belongs to which person.
+3. Re-run with `--from-json output/<name>.json --speaker-names "Alice,Bob"` to write a corrected `_named.json` with real names.
+4. Generate the report from the corrected JSON: `--from-json output/<name>_named.json --report`.
+
+This two-pass approach is more reliable than trying to engineer perfect automatic diarization on single-mic audio.
