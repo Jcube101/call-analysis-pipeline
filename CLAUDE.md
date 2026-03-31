@@ -72,6 +72,8 @@ output/          — pipeline outputs land here (gitignored, must exist locally)
 - **Download endpoints use glob patterns** to find files by type — do not filter out files with `"input"` in the name as all timestamped output files start with `input_`. Filter by specific suffixes instead (`_report`, `_named`).
 - **txt glob** excludes `"_report"` to avoid matching report files; **json glob** excludes `"named"` to avoid matching `transcript_named.json` as the fallback (named JSON takes priority over generic JSON).
 - **Majority vote smoothing** should NOT be applied to interview-style recordings where one speaker dominates — it collapses minority-speaker segments into the majority speaker. MFCC re-identification helps with label drift on long recordings but cannot fix short-segment misattribution at conversation boundaries. Practical fix for label flipping: use `--from-json` with `--speaker-names` after reviewing the transcript.
+- **Job state must be set atomically before `_push_complete()`** — read the report file first (catching and printing any errors with `except Exception as e: print(...)`), then set `job["report"]`, `job["report_path"]`, `job["status"]`, and all other fields as a single block, then call `_push_complete()`. Never send a progress "Done" message before the file read completes. A bare `except: pass` on a report file read silently leaves `job["report"] = None`, causing the frontend to receive `"report": null` in the complete message.
+- **`/reconnect` report check**: use `if report is None:` (not `if not report:`) when deciding whether to re-read the report from disk — an empty string report is valid and should not trigger a redundant disk read.
 
 ## Output file naming
 
