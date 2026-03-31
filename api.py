@@ -403,8 +403,8 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
             try:
                 with open(report_path, encoding="utf-8") as f:
                     job["report"] = f.read()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[error] Could not read report file: {e}")
             files["report"] = report_path
             _push_progress(job_id, 5, "AI Report", "Done")
 
@@ -486,17 +486,23 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
             _stop_hb.set()
             _hb.join(timeout=1)
 
-        _push_progress(job_id, 5, "AI Report", "Done")
-
-        job["report_path"] = report_path
+        # Read report content into job state before sending the complete message.
+        # If this read fails the error is logged and report_text stays None —
+        # the client will fall back to /reconnect which re-reads from disk.
         try:
             with open(report_path, encoding="utf-8") as f:
-                job["report"] = f.read()
-        except Exception:
-            pass
+                report_text = f.read()
+        except Exception as e:
+            print(f"[error] Could not read report file: {e}")
+            report_text = None
 
+        job["report"] = report_text
+        job["report_path"] = report_path
         job["transcript"] = transcribed_segments
         job["metadata"] = json_meta
+        job["current_stage"] = 5
+        job["stage_name"] = "AI Report"
+        job["progress_message"] = "Done"
         files["report"] = report_path
         job["status"] = "complete"
         job["files"] = files
@@ -669,7 +675,7 @@ async def reconnect(job_id: str):
     # This covers the case where the server restarted after Stage 5 completed,
     # or where the file read failed silently during the pipeline run.
     report = job.get("report")
-    if not report:
+    if report is None:
         report_path = job.get("report_path")
         if not report_path:
             job_dir = job.get("output_dir", f"output/jobs/{job_id}")
