@@ -291,6 +291,12 @@ GET /download/{job_id}/wav         →  clean audio (.wav)
 
 Files are served directly from disk — no status check required. The server can be restarted and downloads still work as long as `output/jobs/{job_id}/` exists.
 
+## Known limitations
+
+- **Speaker diarization accuracy** depends on recording quality. Single-microphone recordings may have occasional speaker label flipping. Use `--from-json` with `--speaker-names` to correct labels after reviewing the transcript.
+- **ngrok free tier** generates a new URL on every restart. Paste the new URL into the Backend URL field on the site.
+- **WebSocket UI** may show a stale stage after an ngrok reconnect. The pipeline completes correctly — files are in `output/jobs/`.
+
 ## Exposing via ngrok
 
 To make the API reachable from a browser (e.g. a deployed frontend):

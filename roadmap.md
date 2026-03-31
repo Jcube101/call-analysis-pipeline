@@ -85,13 +85,15 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 
 ### API / Integration
 
-- [x] **FastAPI wrapper** — `api.py` exposes the full pipeline over HTTP + WebSocket with job management, real-time progress via WebSocket, message queue replay on reconnect, and disk-based job recovery after server restart
-- [x] **Frontend integration** — job-joseph.com/projects/call-analysis web frontend consumes the API; uploads audio, tracks pipeline progress via WebSocket, displays transcript and AI report on completion with working download buttons
-- [x] **CORS + ngrok support** — three-layer CORS setup handles ngrok headers; heartbeat thread during Stage 5 keeps WebSocket alive across ngrok's 30 s idle timeout; `/reconnect/{job_id}` endpoint for client-side state recovery
-- [x] **Download endpoints** — all four file types (`transcript`, `json`, `report`, `wav`) served directly from disk with correct `Content-Type` and `Content-Disposition` headers; named JSON takes priority over generic JSON; no job status check required
-- [x] **generate_report flag threading fix** — flag stored explicitly in job dict to survive background thread handoff; explicit `bool()` cast handles string form values
-- [x] **Job disk recovery** — server restart does not lose job state; files persist in `output/jobs/{job_id}/` and are served directly from disk
+- [x] **FastAPI wrapper fully operational** — HTTP + WebSocket API with job management, real-time progress, message queue replay on reconnect
+- [x] **WebSocket progress updates** — per-stage progress pushed to client; heartbeat during Stage 5 keeps connection alive across ngrok idle timeout
+- [x] **Frontend deployed** — job-joseph.com/projects/call-analysis; upload audio, watch progress, view transcript + report, download all files
+- [x] **Demo tab** — real Verstappen interview sample output shown on the site
+- [x] **All download endpoints working** — `transcript`, `json`, `report`, `wav`; correct `Content-Type` and `Content-Disposition` headers; named JSON takes priority
 - [x] **Markdown report rendered in browser UI** — frontend renders `.md` report content correctly
+- [x] **Report from JSON writes back to original job folder** — `POST /report-from-json` links to existing job by `metadata.job_id`
+- [x] **Job disk recovery after server restart** — files persist in `output/jobs/{job_id}/`, served directly from disk with no status check
+- [x] **generate_report flag threading fix** — stored explicitly in job dict; explicit `bool()` cast handles string form values
 
 ### Usability
 
@@ -109,19 +111,24 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 
 ---
 
-## v1.1 — Frontend polish (in progress)
+## v1.1 — Next improvements
 
-- [ ] **WebSocket reconnect** — automatic reconnect after ngrok timeout without requiring a page refresh
-- [ ] **Live tab redesign** — full pipeline options visible, advanced settings in collapsible panel, form state persisted to localStorage
+- [ ] **WebSocket UI catches up after ngrok reconnect** — UI should resume correct stage display without requiring Start Over
+- [ ] **Stereo audio support** — dedicated per-channel diarization for perfect speaker separation on two-mic recordings
+- [ ] **Manual speaker label correction UI** — in-browser editor to reassign speaker labels on the transcript before downloading
+- [ ] **Batch mode** — `python main.py --input-dir input/` to process multiple files in sequence
+- [ ] **Watch mode** — monitor `input/` and auto-process new files as they appear
+- [ ] **Config profiles** — named `.env` profiles per use case (e.g. `--profile interview`)
 
 ---
 
 ## Icebox (no timeline)
 
 - Speaker identification (match `Speaker A` to a known voice profile)
+- Fine-tune pyannote on interview-style single-mic recordings to reduce label flipping
 - Real-time streaming transcription
 - Cloud storage integration (S3/GCS for input/output)
 - Webhook on completion (e.g. post JSON to a URL)
 - Persistent SQLite job storage (replace in-memory dict; survive process crashes)
-- ngrok static domain (eliminate reconnect workaround for frontend)
+- ngrok static domain — paid tier eliminates the URL-change-on-restart limitation
 - Docker image with `api.py` included (single container for CLI + API modes)

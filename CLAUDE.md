@@ -12,7 +12,12 @@ Takes an audio recording of a two-person conversation (MP3, M4A, WAV, or any ffm
 
 ## Status
 
-Full pipeline v1.0 complete and tested. FastAPI wrapper operational with WebSocket progress updates. Frontend deployed at job-joseph.com/projects/call-analysis. All download endpoints working correctly.
+v1.0 complete and fully operational. FastAPI wrapper with WebSocket progress, frontend deployed at job-joseph.com/projects/call-analysis. All pipeline stages, downloads, and report generation working end to end.
+
+**Known limitations:**
+- Speaker diarization on single-mic recordings has occasional label flipping — use `--from-json` with `--speaker-names` to correct after reviewing the transcript.
+- WebSocket UI can get stuck on the last known stage after an ngrok reconnect — the pipeline completes correctly and files are saved; use Start Over and re-check the output folder as a workaround.
+- ngrok free tier changes URL on every restart — paste the new URL into the Backend URL field on the site.
 
 ## How to run
 
@@ -66,6 +71,7 @@ output/          — pipeline outputs land here (gitignored, must exist locally)
 - **`generate_report` flag** must be stored explicitly on the job dict as `job["generate_report"] = bool(generate_report)` when the job is created — do not rely on function arguments alone as the value can be lost between threads.
 - **Download endpoints use glob patterns** to find files by type — do not filter out files with `"input"` in the name as all timestamped output files start with `input_`. Filter by specific suffixes instead (`_report`, `_named`).
 - **txt glob** excludes `"_report"` to avoid matching report files; **json glob** excludes `"named"` to avoid matching `transcript_named.json` as the fallback (named JSON takes priority over generic JSON).
+- **Majority vote smoothing** should NOT be applied to interview-style recordings where one speaker dominates — it collapses minority-speaker segments into the majority speaker. MFCC re-identification helps with label drift on long recordings but cannot fix short-segment misattribution at conversation boundaries. Practical fix for label flipping: use `--from-json` with `--speaker-names` after reviewing the transcript.
 
 ## Output file naming
 
