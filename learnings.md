@@ -384,3 +384,72 @@ On a single-microphone recording both voices share the same acoustic channel. Th
 4. Generate the report from the corrected JSON: `--from-json output/<name>_named.json --report`.
 
 This two-pass approach is more reliable than trying to engineer perfect automatic diarization on single-mic audio.
+
+---
+
+## 17. Gemini API reliability
+
+### Pro times out on long transcripts under high demand
+
+`gemini-3.1-pro-preview` returns 503 after 10+ minutes on transcripts of 26 000+ characters when the API is under load. The google-genai SDK uses `tenacity` internally and retries before raising, so the visible wait time is longer than the API's stated limit. Always implement an explicit timeout.
+
+### Always set a timeout on Gemini API calls
+
+Without `HttpOptions(timeout=300)`, a hung Pro request waits indefinitely, blocking the pipeline thread and the user's browser. 300 seconds (5 minutes) is a reasonable ceiling — Flash completes in under 30 s; Pro completes in under 2 minutes under normal load.
+
+```python
+config=types.GenerateContentConfig(
+    http_options=types.HttpOptions(timeout=300)
+)
+```
+
+### Automatic fallback to Flash on 503 is essential for production reliability
+
+Pro availability is intermittent. Without a fallback, a 503 surfaces as an error to the user even though Flash would have succeeded. The pattern:
+
+```python
+try:
+    return _call_gemini_model(client, prompt, message, model), model
+except Exception as e:
+    if "503" in str(e) and model != FALLBACK_MODEL:
+        return _call_gemini_model(client, prompt, message, FALLBACK_MODEL), FALLBACK_MODEL
+    raise
+```
+
+Log which model actually ran so failures are diagnosable.
+
+### Model tradeoffs in practice
+
+- **Flash** (`gemini-3-flash-preview`) — most reliable, handles transcripts of any length, completes in under 30 s. Default choice for calls longer than 15 minutes.
+- **Pro** (`gemini-3.1-pro-preview`) — noticeably deeper analysis on short calls (under 15 min), but unreliable on long transcripts and under high API demand. Worth trying for short, high-stakes calls.
+- **Flash Lite** (`gemini-3.1-flash-lite-preview`) — fastest, cheapest, good for quick summaries. Output quality is visibly lower on complex conversations.
+
+---
+
+## 18. Frontend state management
+
+### Each pipeline run requires a completely fresh state
+
+Reusing a `job_id` from a previous run causes the new run's WebSocket messages to overwrite the old job's data in the server's in-memory dict. The frontend must treat each "Start" as a brand-new session.
+
+Fields that must be reset before every run: `jobId`, transcript, report, error, and the active WebSocket connection.
+
+### runId pattern for discarding stale WebSocket messages
+
+When a user starts a new run while a previous run's WebSocket is still delivering messages, the stale messages can overwrite the new run's state. A `runId` (e.g. `Date.now()` captured at run-start and stored in a closure or ref) lets the WebSocket handler discard messages that don't match the current run:
+
+```js
+const currentRunId = runId; // captured at run start
+ws.onmessage = (event) => {
+    if (runId !== currentRunId) return; // stale — discard
+    // handle message
+};
+```
+
+### Switching sub-modes must clear all result state
+
+The "Analyse Audio" and "Report from Transcript" sub-modes share the same result area. Switching between them without clearing state shows the previous run's transcript or report alongside the new run's progress, confusing the user. Always clear all result state — including `jobId` — on sub-mode switch.
+
+### Try Again must reset jobId, not just clear the display
+
+If "Try Again" clears the display but keeps the old `jobId`, the next `POST /analyse` creates a new job but the frontend still opens a WebSocket to the old `job_id`. The new run's progress never appears. Always set `jobId = null` as part of the reset so the next run gets a fresh WebSocket URL from the POST response.
