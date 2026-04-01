@@ -106,11 +106,32 @@ def _build_metadata_block(
     return "\n".join(lines)
 
 
-def _call_gemini(client, system_prompt: str, user_message: str, model: str) -> str:
-    """Send one request to Gemini and return the response text."""
+FALLBACK_MODEL = "gemini-3-flash-preview"
+
+
+def _call_gemini_model(client, system_prompt: str, user_message: str, model: str) -> str:
+    """Send one request to Gemini with a 5-minute timeout and return the response text."""
+    from google.genai import types
     full_prompt = f"{system_prompt}\n\n{user_message}"
-    response = client.models.generate_content(model=model, contents=full_prompt)
+    response = client.models.generate_content(
+        model=model,
+        contents=full_prompt,
+        config=types.GenerateContentConfig(
+            http_options=types.HttpOptions(timeout=300)
+        ),
+    )
     return response.text
+
+
+def _call_gemini(client, system_prompt: str, user_message: str, model: str) -> tuple[str, str]:
+    """Call Gemini, falling back to Flash on 503. Returns (response_text, actual_model)."""
+    try:
+        return _call_gemini_model(client, system_prompt, user_message, model), model
+    except Exception as e:
+        if "503" in str(e) and model != FALLBACK_MODEL:
+            print(f"[Stage 5] {model} unavailable, falling back to {FALLBACK_MODEL}...")
+            return _call_gemini_model(client, system_prompt, user_message, FALLBACK_MODEL), FALLBACK_MODEL
+        raise
 
 
 def _split_transcript(transcript_text: str) -> list[str]:
@@ -193,13 +214,15 @@ def run(
     chunks = _split_transcript(transcript_text)
     n_chunks = len(chunks)
 
+    actual_model = gemini_model
+
     if n_chunks == 1:
         print(f"[Stage 5] Sending transcript to Gemini ({len(transcript_text):,} chars)...")
         user_message = (
             f"## Conversation metadata\n\n{metadata_block}\n\n"
             f"## Transcript\n\n{transcript_text}"
         )
-        report_body = _call_gemini(client, instruction_prompt, user_message, gemini_model)
+        report_body, actual_model = _call_gemini(client, instruction_prompt, user_message, gemini_model)
     else:
         print(f"[Stage 5] Transcript is large — splitting into {n_chunks} chunks...")
         partial_reports: list[str] = []
@@ -210,7 +233,7 @@ def run(
                 f"## Conversation metadata\n\n{metadata_block}\n\n"
                 f"## Transcript (part {i} of {n_chunks})\n\n{chunk}"
             )
-            partial = _call_gemini(client, instruction_prompt, user_message, gemini_model)
+            partial, actual_model = _call_gemini(client, instruction_prompt, user_message, gemini_model)
             partial_reports.append(f"### Part {i} of {n_chunks}\n\n{partial}")
 
         print(f"[Stage 5] Synthesising {n_chunks} partial reports...")
@@ -221,7 +244,9 @@ def run(
             "Maintain the analytical focus from the original instruction."
         )
         combined_partials = "\n\n---\n\n".join(partial_reports)
-        report_body = _call_gemini(client, synthesis_prompt, combined_partials, gemini_model)
+        report_body, actual_model = _call_gemini(client, synthesis_prompt, combined_partials, gemini_model)
+
+    print(f"[Stage 5] Report generated using {actual_model}")
 
     # Build the full report with a header
     processed_at = datetime.now().isoformat(timespec="seconds")

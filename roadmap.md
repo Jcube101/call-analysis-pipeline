@@ -94,6 +94,13 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 - [x] **Report from JSON writes back to original job folder** — `POST /report-from-json` links to existing job by `metadata.job_id`
 - [x] **Job disk recovery after server restart** — files persist in `output/jobs/{job_id}/`, served directly from disk with no status check
 - [x] **generate_report flag threading fix** — stored explicitly in job dict; explicit `bool()` cast handles string form values
+- [x] **Selectable Gemini model** — `gemini_model` param on both POST endpoints; allowed values: Flash (default), Pro, Flash Lite; invalid values silently replaced with default
+- [x] **Automatic fallback to Flash on Pro 503** — `_call_gemini` catches 503 and retries with `gemini-3-flash-preview`; actual model used is logged
+- [x] **5 minute Gemini API timeout** — `HttpOptions(timeout=300)` prevents indefinite hangs when Pro is overloaded
+- [x] **Stale state fix** — full reset between pipeline runs; `runId` pattern discards stale WebSocket messages from previous runs
+- [x] **Sub-modes renamed** — "Analyse Audio" and "Report from Transcript"
+- [x] **Model selector helper text** — explains Flash vs Pro vs Flash Lite tradeoffs
+- [x] **Demo tab Markdown rendering fixed**
 
 ### Usability
 
@@ -113,12 +120,12 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 
 ## v1.1 — Next improvements
 
-- [ ] **WebSocket UI catches up after ngrok reconnect** — UI should resume correct stage display without requiring Start Over
+- [ ] **WebSocket UI catches up correctly after ngrok reconnect** — UI should resume correct stage display without requiring Start Over
 - [ ] **Stereo audio support** — dedicated per-channel diarization for perfect speaker separation on two-mic recordings
 - [ ] **Manual speaker label correction UI** — in-browser editor to reassign speaker labels on the transcript before downloading
-- [ ] **Batch mode** — `python main.py --input-dir input/` to process multiple files in sequence
-- [ ] **Watch mode** — monitor `input/` and auto-process new files as they appear
-- [ ] **Config profiles** — named `.env` profiles per use case (e.g. `--profile interview`)
+- [ ] **Batch mode** — process multiple files from `input/` folder in sequence
+- [ ] **Watch mode** — auto-process new files as they appear in `input/`
+- [ ] **Update CallAnalysisPipelineDetail.tsx** — reflect full built state including FastAPI, ngrok, web UI, and Gemini model selection
 
 ---
 
