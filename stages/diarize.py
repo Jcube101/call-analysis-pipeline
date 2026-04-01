@@ -44,8 +44,8 @@ def _reidentify_speakers(
 
     pyannote processes long audio in chunks and can flip speaker labels between
     chunks (e.g. the same physical voice becomes SPEAKER_00 in the first half
-    and SPEAKER_01 in the second half). This function computes MFCC + delta
-    features per segment, clusters them globally, then reassigns labels in
+    and SPEAKER_01 in the second half). This function computes MFCC features
+    per segment, clusters them globally, then reassigns labels in
     first-appearance order so the same voice always maps to the same label.
 
     MFCC features (via librosa, already a pipeline dependency) are used instead
@@ -70,7 +70,7 @@ def _reidentify_speakers(
         print("[Stage 2] scikit-learn not installed — skipping speaker re-identification")
         return segments
 
-    MIN_SEG_SECONDS = 1.0
+    MIN_SEG_SECONDS = 0.5
     N_MFCC = 20
 
     # Convert waveform to a mono float32 numpy array for librosa.
@@ -97,16 +97,7 @@ def _reidentify_speakers(
 
         try:
             mfcc = librosa.feature.mfcc(y=seg_audio, sr=sample_rate, n_mfcc=N_MFCC)
-            delta = librosa.feature.delta(mfcc)
-            delta2 = librosa.feature.delta(mfcc, order=2)
-            # Mean + std pooling over time → fixed-size feature vector (5 * N_MFCC,)
-            feat = np.concatenate([
-                mfcc.mean(axis=1),
-                delta.mean(axis=1),
-                delta2.mean(axis=1),
-                mfcc.std(axis=1),
-                delta.std(axis=1),
-            ])
+            feat = np.mean(mfcc, axis=1)
             embeddings.append(feat)
             long_indices.append(i)
         except Exception as exc:
@@ -125,27 +116,14 @@ def _reidentify_speakers(
         )
         return segments
 
-    def _smooth_labels(segments: list[dict], labels: np.ndarray, window: int = 5) -> np.ndarray:
-        """Majority-vote smoothing over a sliding window to fix isolated label flips."""
-        smoothed = labels.copy()
-        for i in range(len(labels)):
-            start = max(0, i - window // 2)
-            end = min(len(labels), i + window // 2 + 1)
-            window_labels = labels[start:end]
-            smoothed[i] = max(set(window_labels), key=list(window_labels).count)
-        return smoothed
-
     # Cluster globally
     emb_matrix = normalize(np.array(embeddings))
     kmeans = KMeans(
         n_clusters=num_speakers,
-        n_init=20,
-        max_iter=500,
+        n_init=10,
         random_state=42,
-        tol=1e-6,
     )
     cluster_ids = kmeans.fit_predict(emb_matrix)
-    cluster_ids = _smooth_labels(segments, cluster_ids)
 
     # Map cluster IDs → SPEAKER_XX in first-appearance order
     cluster_to_label: dict[int, str] = {}
