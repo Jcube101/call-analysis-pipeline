@@ -56,6 +56,12 @@ from starlette.requests import Request
 
 from config import VALID_CONTEXTS, Settings, settings
 
+ALLOWED_GEMINI_MODELS = [
+    "gemini-3-flash-preview",
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-flash-lite-preview",
+]
+
 # Snapshot of .env defaults taken once at startup — reused on every job reset
 # to avoid re-parsing environment variables per request.
 _default_settings: dict = {}
@@ -377,6 +383,8 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
             except Exception:
                 audio_duration = None
 
+            gemini_model = job.get("gemini_model", "gemini-3-flash-preview")
+
             # Heartbeat keeps the WebSocket alive during the Gemini API call
             _stop_hb = threading.Event()
             _hb = threading.Thread(
@@ -394,6 +402,7 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
                     speaker_counts=dict(speaker_counts),
                     api_key=settings.gemini_api_key,
                     prompts_dir="prompts",
+                    gemini_model=gemini_model,
                 )
             finally:
                 _stop_hb.set()
@@ -463,6 +472,7 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
         _push_progress(job_id, 5, "AI Report", "Stage 5: Generating analysis report...")
         speaker_counts = Counter(s["speaker"] for s in transcribed_segments)
         audio_duration = max((s["end"] for s in transcribed_segments), default=None)
+        gemini_model = job.get("gemini_model", "gemini-3-flash-preview")
 
         # Heartbeat keeps the WebSocket alive during the Gemini API call
         _stop_hb = threading.Event()
@@ -481,6 +491,7 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
                 speaker_counts=dict(speaker_counts),
                 api_key=settings.gemini_api_key,
                 prompts_dir="prompts",
+                gemini_model=gemini_model,
             )
         finally:
             _stop_hb.set()
@@ -548,7 +559,11 @@ async def analyse(
     generate_report: bool = Form(False),
     skip_preprocess: bool = Form(False),
     whisper_model: Optional[str] = Form(None),
+    gemini_model: str = Form("gemini-3-flash-preview"),
 ):
+    if gemini_model not in ALLOWED_GEMINI_MODELS:
+        gemini_model = "gemini-3-flash-preview"
+
     job_id = str(uuid.uuid4())
     job_dir = f"output/jobs/{job_id}"
     os.makedirs(job_dir, exist_ok=True)
@@ -573,12 +588,14 @@ async def analyse(
         "generate_report": bool(generate_report),
         "skip_preprocess": skip_preprocess,
         "whisper_model": whisper_model,
+        "gemini_model": gemini_model,
     }
 
     jobs[job_id] = {
         "status": "queued",
         "params": params,
         "generate_report": bool(generate_report),
+        "gemini_model": gemini_model,
         "message_queue": [],
         "current_stage": None,
         "stage_name": None,
@@ -600,7 +617,11 @@ async def report_from_json(
     file: UploadFile = File(...),
     context: Optional[str] = Form(None),
     speaker_names: Optional[str] = Form(None),
+    gemini_model: str = Form("gemini-3-flash-preview"),
 ):
+    if gemini_model not in ALLOWED_GEMINI_MODELS:
+        gemini_model = "gemini-3-flash-preview"
+
     # Read bytes first so we can inspect the metadata before choosing a folder
     content = await file.read()
 
@@ -634,12 +655,14 @@ async def report_from_json(
     params = {
         "context": context,
         "speaker_names": parsed_names,
+        "gemini_model": gemini_model,
     }
 
     # Preserve files and transcript from the prior pipeline run if available
     jobs[job_id] = {
         "status": "queued",
         "params": params,
+        "gemini_model": gemini_model,
         "message_queue": prior.get("message_queue", []),
         "current_stage": None,
         "stage_name": None,
