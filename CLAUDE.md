@@ -208,6 +208,16 @@ Requires `fastapi`, `uvicorn`, `python-multipart` (not in `requirements.txt` —
 
 Download endpoints serve directly from disk with no job status check — files are returned as soon as they exist on disk regardless of in-memory job state. The `Content-Disposition` header carries the original filename so browsers save with the correct extension.
 
+**POST `/analyse` form parameters** (all optional except `file`):
+- `file`: audio upload (required)
+- `context`, `num_speakers`, `transcription_mode`, `language`, `speaker_names`, `word_timestamps`, `generate_report`, `skip_preprocess`, `whisper_model` — as documented elsewhere
+- `gemini_model: str` (default: `gemini-3-flash-preview`) — Gemini model used for Stage 5. Allowed values: `gemini-3-flash-preview`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite-preview`. Invalid values are silently replaced with the default.
+
+**POST `/report-from-json` form parameters**:
+- `file`: transcript JSON upload (required)
+- `context`, `speaker_names` — as documented elsewhere
+- `gemini_model: str` (default: `gemini-3-flash-preview`) — same allowed values and fallback as above.
+
 ### Job folder file naming
 
 All output files from `api.py` use the uploaded filename stem (`input`) plus a timestamp:
