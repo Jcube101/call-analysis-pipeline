@@ -94,6 +94,16 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 - [x] **Report from JSON writes back to original job folder** — `POST /report-from-json` links to existing job by `metadata.job_id`
 - [x] **Job disk recovery after server restart** — files persist in `output/jobs/{job_id}/`, served directly from disk with no status check
 - [x] **generate_report flag threading fix** — stored explicitly in job dict; explicit `bool()` cast handles string form values
+- [x] **Selectable Gemini model** — `gemini_model` param on both POST endpoints; allowed values: Flash (default), Pro, Flash Lite; invalid values silently replaced with default
+- [x] **Automatic fallback to Flash on Pro 503** — `_call_gemini` catches 503 and retries with `gemini-3-flash-preview`; actual model used is logged
+- [x] **5 minute Gemini API timeout** — `HttpOptions(timeout=300)` prevents indefinite hangs when Pro is overloaded
+- [x] **Stale state fix** — full reset between pipeline runs; `runId` pattern discards stale WebSocket messages from previous runs
+- [x] **Sub-modes renamed** — "Analyse Audio" and "Report from Transcript"
+- [x] **Model selector helper text** — explains Flash vs Pro vs Flash Lite tradeoffs
+- [x] **Demo tab Markdown rendering fixed**
+- [x] **Unit test suite** — pytest, 4 modules (config, export, api, report), 74 tests, all passing
+- [x] **Integration tests completed manually** — full pipeline on real M4A files, all stages, all three Gemini models, two-pass renaming workflow
+- [x] **API tests completed manually** — all endpoints validated: /analyse, /report-from-json, /status, /reconnect, /download/*, WebSocket, disk recovery
 
 ### Usability
 
@@ -105,7 +115,6 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 
 - [ ] **Docker image** — single-container setup with ffmpeg, Python deps, and Whisper model baked in
 - [ ] **Pre-commit hooks** — lint (`ruff`) and type-check (`mypy`) on commit
-- [ ] **Unit tests** — pytest suite covering config loading, label mapping, timestamp formatting, JSON schema
 
 ---
 
@@ -113,7 +122,10 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 
 ## v1.1 — Next improvements
 
-- [ ] **WebSocket UI catches up after ngrok reconnect** — UI should resume correct stage display without requiring Start Over
+- [ ] **WebSocket UI catches up correctly after ngrok reconnect** — UI should resume correct stage display without requiring Start Over
+- [ ] **Automated integration tests** — short fixture audio file run through the full pipeline in CI
+- [ ] **Automated API tests** — FastAPI TestClient covering all endpoints without starting a real server
+- [ ] **CI/CD pipeline** — GitHub Actions running `pytest tests/` on every push
 - [ ] **Stereo audio support** — dedicated per-channel diarization for perfect speaker separation on two-mic recordings
 - [ ] **Manual speaker label correction UI** — in-browser editor to reassign speaker labels on the transcript before downloading
 - [ ] **Batch mode** — `python main.py --input-dir input/` to process multiple files in sequence
