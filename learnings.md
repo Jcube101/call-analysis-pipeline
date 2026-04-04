@@ -453,3 +453,40 @@ The "Analyse Audio" and "Report from Transcript" sub-modes share the same result
 ### Try Again must reset jobId, not just clear the display
 
 If "Try Again" clears the display but keeps the old `jobId`, the next `POST /analyse` creates a new job but the frontend still opens a WebSocket to the old `job_id`. The new run's progress never appears. Always set `jobId = null` as part of the reset so the next run gets a fresh WebSocket URL from the POST response.
+
+---
+
+## 19. Testing strategy
+
+### Unit-test the pure logic layers, not the ML stages
+
+Unit tests for `config.py`, `stages/export.py`, `api.py` helpers, and `stages/report.py` utilities run in milliseconds with no model dependencies. These are worth maintaining.
+
+Do **not** unit-test `stages/preprocess.py`, `stages/diarize.py`, or `stages/transcribe.py`. Mocking torch/pyannote/whisper is complex, fragile, and the tests would not reflect real behaviour. Manual integration testing on real audio files is more valuable for these stages.
+
+### Stub heavy imports at the sys.modules level for api.py tests
+
+`api.py` imports all pipeline stages at module level. In tests, stub only the heavy stages (`diarize`, `preprocess`, `transcribe`) before importing `api`:
+
+```python
+import sys, types
+for mod in ("stages.diarize", "stages.preprocess", "stages.transcribe"):
+    if mod not in sys.modules:
+        sys.modules[mod] = types.ModuleType(mod)
+
+from api import get_or_recover_job, jobs
+```
+
+Leave `stages.export` and `stages.report` as real modules so that `test_export.py` and `test_report.py` can import them normally in the same pytest session.
+
+### Use tmp_path for all file system tests
+
+Never write to the real `output/` directory in tests. Use pytest's `tmp_path` fixture — it creates a unique temporary directory per test and cleans it up automatically.
+
+### pytest-mock and unittest.mock are sufficient for Gemini API mocking
+
+Patch `stages.report._call_gemini` or `stages.report._call_gemini_model` rather than the SDK itself. This keeps tests stable against SDK version changes.
+
+### FastAPI TestClient for future automated API tests
+
+`from fastapi.testclient import TestClient` allows calling all API endpoints without starting a real server. Useful for automated regression tests against the full endpoint surface. No torch/pyannote required as long as the pipeline stages are stubbed.

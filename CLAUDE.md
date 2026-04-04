@@ -288,6 +288,24 @@ The Gemini API call takes 30–60 s. ngrok free tier drops idle WebSocket connec
 
 Pipeline threads catch `BaseException` (not just `Exception`) because ctranslate2's CUDA teardown raises `SystemExit` on Windows when the WhisperModel is garbage-collected mid-process. This is the same bug handled by the `_active_model` module-level reference in `transcribe.py`.
 
+## Tests
+
+Unit tests live in `tests/`:
+- `tests/test_config.py` — settings loading, overrides, env var parsing, `validate_for_report()` with/without API key
+- `tests/test_export.py` — timestamp formatting, JSON schema, speaker name mapping, unique file naming, `write_relabelled()`
+- `tests/test_api.py` — `get_or_recover_job()` in-memory and disk recovery, glob filter patterns, job state structure, `ALLOWED_GEMINI_MODELS`
+- `tests/test_report.py` — prompt loading from file and fallback defaults, transcript chunking, model fallback on 503, API key validation
+
+Run with: `pytest tests/ -v`
+
+Do **not** add unit tests for `stages/preprocess.py`, `stages/diarize.py`, or `stages/transcribe.py` — these require real model downloads and audio files and are covered by manual integration testing instead.
+
+Integration and API tests have been completed manually — see README.md for the full list of validated scenarios.
+
+Heavy pipeline stages (`diarize`, `preprocess`, `transcribe`) are stubbed via `sys.modules` in `test_api.py` before `api` is imported, so torch/GPU dependencies are not required to run the unit test suite.
+
+Future: automated integration tests using a short fixture audio file and FastAPI TestClient.
+
 ## Frontend (job-joseph.com)
 
 A web frontend at job-joseph.com consumes the API. It connects to the ngrok-exposed URL, uploads audio via `POST /analyse`, then opens a WebSocket for real-time progress. On job completion the `complete` message delivers the transcript and report inline.

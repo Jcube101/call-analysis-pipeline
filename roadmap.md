@@ -101,6 +101,9 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 - [x] **Sub-modes renamed** — "Analyse Audio" and "Report from Transcript"
 - [x] **Model selector helper text** — explains Flash vs Pro vs Flash Lite tradeoffs
 - [x] **Demo tab Markdown rendering fixed**
+- [x] **Unit test suite** — pytest, 4 modules (config, export, api, report), 74 tests, all passing
+- [x] **Integration tests completed manually** — full pipeline on real M4A files, all stages, all three Gemini models, two-pass renaming workflow
+- [x] **API tests completed manually** — all endpoints validated: /analyse, /report-from-json, /status, /reconnect, /download/*, WebSocket, disk recovery
 
 ### Usability
 
@@ -112,7 +115,6 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 
 - [ ] **Docker image** — single-container setup with ffmpeg, Python deps, and Whisper model baked in
 - [ ] **Pre-commit hooks** — lint (`ruff`) and type-check (`mypy`) on commit
-- [ ] **Unit tests** — pytest suite covering config loading, label mapping, timestamp formatting, JSON schema
 
 ---
 
@@ -121,6 +123,9 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 ## v1.1 — Next improvements
 
 - [ ] **WebSocket UI catches up correctly after ngrok reconnect** — UI should resume correct stage display without requiring Start Over
+- [ ] **Automated integration tests** — short fixture audio file run through the full pipeline in CI
+- [ ] **Automated API tests** — FastAPI TestClient covering all endpoints without starting a real server
+- [ ] **CI/CD pipeline** — GitHub Actions running `pytest tests/` on every push
 - [ ] **Stereo audio support** — dedicated per-channel diarization for perfect speaker separation on two-mic recordings
 - [ ] **Manual speaker label correction UI** — in-browser editor to reassign speaker labels on the transcript before downloading
 - [ ] **Batch mode** — process multiple files from `input/` folder in sequence

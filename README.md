@@ -300,6 +300,44 @@ GET /download/{job_id}/wav         →  clean audio (.wav)
 
 Files are served directly from disk — no status check required. The server can be restarted and downloads still work as long as `output/jobs/{job_id}/` exists.
 
+## Testing
+
+### Unit tests
+
+Run the pytest unit test suite:
+
+```bash
+pytest tests/ -v
+```
+
+Covers: config loading, export formatting, API job recovery, report prompt loading and model fallback.
+
+### Integration tests (manual, completed)
+
+The following integration scenarios have been validated manually end-to-end:
+- Full pipeline on real M4A files (2 min, 8 min, 30 min)
+- Stage 1 noise reduction producing clean WAV
+- Stage 2 diarization identifying 2 speakers
+- Stage 3 transcription in accurate and fast modes
+- Stage 4 export producing valid TXT and JSON with correct schema
+- Stage 5 Gemini report generation with all three models
+- Two-pass approach (pipeline → review → rename → report)
+- Report from Transcript mode with speaker renaming
+
+### API tests (manual, completed)
+
+The following API endpoints have been validated manually:
+- `GET /health` → 200 OK
+- `POST /analyse` → immediate `job_id` response, pipeline runs in background
+- `POST /report-from-json` → writes report to original job folder
+- `GET /status/{job_id}` → correct job state
+- `GET /reconnect/{job_id}` → full job state including report content
+- `GET /download/{job_id}/transcript` → correct `.txt` file
+- `GET /download/{job_id}/json` → named JSON takes priority
+- `GET /download/{job_id}/report` → correct `.md` file
+- `WebSocket /ws/{job_id}` → real-time stage progress messages
+- Job disk recovery after server restart
+
 ## Known limitations
 
 - **Speaker diarization accuracy** depends on recording quality. Single-microphone recordings may have occasional speaker label flipping. Use `--from-json` with `--speaker-names` to correct labels after reviewing the transcript.
