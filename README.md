@@ -65,6 +65,15 @@ output/
 
 ## Setup
 
+## Two ways to use the pipeline
+
+1. **Terminal** — `python main.py --input input/call.mp3`
+2. **Web UI** — start `python api.py`, run `ngrok http 8000`, then open [job-joseph.com/projects/call-analysis](https://job-joseph.com/projects/call-analysis) and paste the ngrok URL into the Backend URL field
+
+---
+
+## Setup
+
 ### Prerequisites
 
 - Python 3.9+ (tested on 3.11)
@@ -112,7 +121,7 @@ cp .env.example .env
 Edit `.env` and fill in:
 
 - `HUGGINGFACE_TOKEN` — required for speaker diarization. Get a token at https://huggingface.co/settings/tokens, then accept the model license at https://huggingface.co/pyannote/speaker-diarization-3.1
-- `GEMINI_API_KEY` — required for `--report`. Get a free key at https://aistudio.google.com/app/apikey
+- `GEMINI_API_KEY` — required for `--report` and Stage 5 report generation via the API. Get a free key at https://aistudio.google.com/app/apikey. Supported models (selectable via the web UI or `gemini_model` API parameter): `gemini-3-flash-preview` (default, most reliable for long transcripts), `gemini-3.1-pro-preview` (deeper analysis, better for short calls under 15 min), `gemini-3.1-flash-lite-preview` (fastest, best for quick summaries)
 - `CONVERSATION_CONTEXT` — `friend`, `work`, `interview`, or `date`
 - `NUM_SPEAKERS` — integer (e.g. `2`) or leave blank for auto-detection
 - `TRANSCRIPTION_MODE` — `accurate` (default) or `fast`

@@ -128,9 +128,9 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 - [ ] **CI/CD pipeline** — GitHub Actions running `pytest tests/` on every push
 - [ ] **Stereo audio support** — dedicated per-channel diarization for perfect speaker separation on two-mic recordings
 - [ ] **Manual speaker label correction UI** — in-browser editor to reassign speaker labels on the transcript before downloading
-- [ ] **Batch mode** — `python main.py --input-dir input/` to process multiple files in sequence
-- [ ] **Watch mode** — monitor `input/` and auto-process new files as they appear
-- [ ] **Config profiles** — named `.env` profiles per use case (e.g. `--profile interview`)
+- [ ] **Batch mode** — process multiple files from `input/` folder in sequence
+- [ ] **Watch mode** — auto-process new files as they appear in `input/`
+- [ ] **Update CallAnalysisPipelineDetail.tsx** — reflect full built state including FastAPI, ngrok, web UI, and Gemini model selection
 
 ---
 

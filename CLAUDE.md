@@ -74,6 +74,11 @@ output/          — pipeline outputs land here (gitignored, must exist locally)
 - **Majority vote smoothing** should NOT be applied to interview-style recordings where one speaker dominates — it collapses minority-speaker segments into the majority speaker. MFCC re-identification helps with label drift on long recordings but cannot fix short-segment misattribution at conversation boundaries. Practical fix for label flipping: use `--from-json` with `--speaker-names` after reviewing the transcript.
 - **Job state must be set atomically before `_push_complete()`** — read the report file first (catching and printing any errors with `except Exception as e: print(...)`), then set `job["report"]`, `job["report_path"]`, `job["status"]`, and all other fields as a single block, then call `_push_complete()`. Never send a progress "Done" message before the file read completes. A bare `except: pass` on a report file read silently leaves `job["report"] = None`, causing the frontend to receive `"report": null` in the complete message.
 - **`/reconnect` report check**: use `if report is None:` (not `if not report:`) when deciding whether to re-read the report from disk — an empty string report is valid and should not trigger a redundant disk read.
+- **`gemini_model` parameter** — accepted by `POST /analyse` and `POST /report-from-json`. Allowed values: `gemini-3-flash-preview` (default), `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite-preview`. Invalid values are silently replaced with the default. Stored on the job dict so background threads read it from job state rather than function arguments.
+- **Automatic fallback to Flash on 503** — if the Gemini API returns a 503, `_call_gemini` retries the same request with `gemini-3-flash-preview` before raising. The model that actually ran is logged at Stage 5 completion.
+- **5 minute timeout on all Gemini API calls** — `HttpOptions(timeout=300)` is set on every `generate_content` call. Without it the process waits indefinitely when Pro is overloaded.
+- **Report-from-JSON folder linking** — `POST /report-from-json` reads `metadata.job_id` from the uploaded JSON before choosing an output directory. If that job folder exists on disk the report is written there, keeping all files for a call together. Otherwise a new `job_id` and folder are created.
+- **Each new pipeline run must generate a fresh `job_id`** — never reuse a previous `job_id`. The frontend must clear all state (jobId, transcript, report, error, WebSocket) before starting a new run. A `runId` (e.g. `Date.now()`) is useful to discard stale WebSocket messages from a previous run that arrive after the new run starts.
 
 ## Output file naming
 
@@ -208,6 +213,16 @@ Requires `fastapi`, `uvicorn`, `python-multipart` (not in `requirements.txt` —
 
 Download endpoints serve directly from disk with no job status check — files are returned as soon as they exist on disk regardless of in-memory job state. The `Content-Disposition` header carries the original filename so browsers save with the correct extension.
 
+**POST `/analyse` form parameters** (all optional except `file`):
+- `file`: audio upload (required)
+- `context`, `num_speakers`, `transcription_mode`, `language`, `speaker_names`, `word_timestamps`, `generate_report`, `skip_preprocess`, `whisper_model` — as documented elsewhere
+- `gemini_model: str` (default: `gemini-3-flash-preview`) — Gemini model used for Stage 5. Allowed values: `gemini-3-flash-preview`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite-preview`. Invalid values are silently replaced with the default.
+
+**POST `/report-from-json` form parameters**:
+- `file`: transcript JSON upload (required)
+- `context`, `speaker_names` — as documented elsewhere
+- `gemini_model: str` (default: `gemini-3-flash-preview`) — same allowed values and fallback as above.
+
 ### Job folder file naming
 
 All output files from `api.py` use the uploaded filename stem (`input`) plus a timestamp:
@@ -297,7 +312,11 @@ A web frontend at job-joseph.com consumes the API. It connects to the ngrok-expo
 
 **ngrok reconnect flow:** If the WebSocket drops (ngrok free tier timeout), the client calls `GET /reconnect/{job_id}` to retrieve the full job state and resume display without re-processing.
 
-**v1.1 in progress:** WebSocket reconnect after ngrok timeout; Live tab redesign with full pipeline options, advanced settings collapsible, localStorage persistence.
+**Sub-modes:** "Analyse Audio" (full pipeline) and "Report from Transcript" (Stage 5 only from uploaded JSON). Switching between sub-modes clears all result state.
+
+**Gemini model selector:** Available in advanced options. Selection is persisted to `localStorage` key `"cap_gemini_model"`. Helper text explains the tradeoffs (Flash for long calls, Pro for shorter calls where deeper analysis matters, Flash Lite for quick summaries).
+
+**State reset between runs:** All state — `jobId`, transcript, report, error, and the active WebSocket — is fully cleared before each new run. A `runId` (set to `Date.now()` at run start) is compared on every incoming WebSocket message; messages from a previous run are discarded. "Try Again" and sub-mode switching both trigger a full reset.
 
 ## What NOT to commit
 
