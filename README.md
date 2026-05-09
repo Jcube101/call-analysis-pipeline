@@ -68,7 +68,7 @@ output/
 ## Two ways to use the pipeline
 
 1. **Terminal** — `python main.py --input input/call.mp3`
-2. **Web UI** — start `python api.py`, run `ngrok http 8000`, then open [job-joseph.com/projects/call-analysis](https://job-joseph.com/projects/call-analysis) and paste the ngrok URL into the Backend URL field
+2. **Web UI** — start `python api.py`, run `ngrok http 8001`, then open [job-joseph.com/projects/call-analysis](https://job-joseph.com/projects/call-analysis) and paste the ngrok URL into the Backend URL field
 
 ---
 
@@ -267,7 +267,7 @@ python api.py
 
 **Terminal 2 — ngrok tunnel:**
 ```bash
-ngrok http 8000
+ngrok http 8001
 ```
 
 Then paste the ngrok URL into the Backend URL field at **job-joseph.com/projects/call-analysis**.
@@ -349,7 +349,7 @@ The following API endpoints have been validated manually:
 To make the API reachable from a browser (e.g. a deployed frontend):
 
 ```bash
-ngrok http 8000
+ngrok http 8001
 ```
 
 ngrok's free tier drops idle WebSocket connections after ~30 s. The API handles this with:

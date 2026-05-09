@@ -191,7 +191,7 @@ pip install -r requirements.txt
 `api.py` exposes the full pipeline over HTTP + WebSocket. Start it with:
 
 ```bash
-uvicorn api:app --host 0.0.0.0 --port 8000
+uvicorn api:app --host 0.0.0.0 --port 8001
 ```
 
 Requires `fastapi`, `uvicorn`, `python-multipart` (not in `requirements.txt` — install separately or add them).
