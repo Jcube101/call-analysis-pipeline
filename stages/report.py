@@ -293,6 +293,7 @@ def run(
         f"**Source:** {os.path.basename(source_file)}  ",
         f"**Context:** {context}  ",
         f"**Speakers:** {num_speakers}  ",
+        f"**Model:** {actual_model}  ",
         f"**Generated:** {processed_at}  ",
         "",
         "---",

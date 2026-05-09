@@ -474,6 +474,7 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
             files["json"] = relabelled
 
         gemini_model = job.get("gemini_model", "claude-haiku-4-5-20251001")
+        print(f"[debug] _run_report_from_json using model: {gemini_model}")
         settings.validate_for_report(gemini_model)
         _push_progress(job_id, 5, "AI Report", "Stage 5: Generating analysis report...")
         speaker_counts = Counter(s["speaker"] for s in transcribed_segments)
@@ -631,6 +632,8 @@ async def report_from_json(
 ):
     if gemini_model not in ALLOWED_GEMINI_MODELS:
         gemini_model = "claude-haiku-4-5-20251001"
+
+    print(f"[debug] report-from-json received: model={gemini_model}, context={context}")
 
     # Read bytes first so we can inspect the metadata before choosing a folder
     content = await file.read()
