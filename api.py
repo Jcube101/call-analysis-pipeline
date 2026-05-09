@@ -375,7 +375,6 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
         # _push_complete is called ONLY after this block so the "complete"
         # message always carries the finished report content.
         generate_report = bool(job.get("generate_report", False))
-        print(f"[debug] generate_report={generate_report}, running Stage 5: {generate_report}")
         if generate_report:
             gemini_model = job.get("gemini_model", "claude-haiku-4-5-20251001")
             settings.validate_for_report(gemini_model)
@@ -474,7 +473,6 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
             files["json"] = relabelled
 
         gemini_model = job.get("gemini_model", "claude-haiku-4-5-20251001")
-        print(f"[debug] _run_report_from_json using model: {gemini_model}")
         settings.validate_for_report(gemini_model)
         _push_progress(job_id, 5, "AI Report", "Stage 5: Generating analysis report...")
         speaker_counts = Counter(s["speaker"] for s in transcribed_segments)
@@ -570,8 +568,6 @@ async def analyse(
     gemini_model: str = Form("claude-haiku-4-5-20251001"),
     context_hints: str = Form(""),
 ):
-    print(f"[debug] /analyse received model: {gemini_model}")
-    print(f"[debug] model valid: {gemini_model in ALLOWED_GEMINI_MODELS}")
     if gemini_model not in ALLOWED_GEMINI_MODELS:
         gemini_model = "claude-haiku-4-5-20251001"
 
@@ -632,8 +628,6 @@ async def report_from_json(
     gemini_model: str = Form("claude-haiku-4-5-20251001"),
     context_hints: str = Form(""),
 ):
-    print(f"[debug] /report-from-json received model: {gemini_model}")
-    print(f"[debug] model valid: {gemini_model in ALLOWED_GEMINI_MODELS}")
     if gemini_model not in ALLOWED_GEMINI_MODELS:
         gemini_model = "claude-haiku-4-5-20251001"
 
