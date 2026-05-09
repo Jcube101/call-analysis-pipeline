@@ -291,3 +291,150 @@ def test_glob_excludes_input_prefixed_json(tmp_path):
     basenames = [os.path.basename(f) for f in json_files]
     assert "input_20260401_000000.json" not in basenames
     assert "call_20260401_000000.json" in basenames
+
+
+# ---------------------------------------------------------------------------
+# API key leak prevention
+# ---------------------------------------------------------------------------
+
+_SECRET_PATTERNS = ("api_key", "api-key", "token", "secret", "password", "credential")
+
+
+def _contains_secret_key(d, path=""):
+    """Recursively check if any dict key looks like a secret field."""
+    if isinstance(d, dict):
+        for k, v in d.items():
+            key_lower = k.lower()
+            for pattern in _SECRET_PATTERNS:
+                if pattern in key_lower:
+                    yield f"{path}.{k}" if path else k
+            yield from _contains_secret_key(v, f"{path}.{k}" if path else k)
+    elif isinstance(d, list):
+        for i, item in enumerate(d):
+            yield from _contains_secret_key(item, f"{path}[{i}]")
+
+
+def test_job_dict_contains_no_secret_keys():
+    """The job dict structure returned by /status must not contain secret fields."""
+    job = {
+        "status": "complete",
+        "params": {
+            "context": "friend",
+            "num_speakers": 2,
+            "transcription_mode": "accurate",
+            "language": "en",
+            "speaker_names": [],
+            "word_timestamps": False,
+            "generate_report": True,
+            "skip_preprocess": False,
+            "whisper_model": "medium",
+            "gemini_model": "claude-haiku-4-5-20251001",
+        },
+        "generate_report": True,
+        "gemini_model": "claude-haiku-4-5-20251001",
+        "message_queue": [],
+        "current_stage": 5,
+        "stage_name": "AI Report",
+        "progress_message": "Done",
+        "transcript": [{"start": 0, "end": 1, "speaker": "A", "text": "hi"}],
+        "metadata": {"source_file": "call.mp3", "context": "friend"},
+        "report_path": "output/jobs/test/call_report.md",
+        "report": "# Report",
+        "error": None,
+        "output_dir": "output/jobs/test",
+        "files": {"transcript": "t.txt", "json": "t.json", "report": "r.md"},
+    }
+    secret_fields = list(_contains_secret_key(job))
+    assert secret_fields == [], f"Job dict contains secret-looking keys: {secret_fields}"
+
+
+def test_reconnect_response_contains_no_secret_keys():
+    """The /reconnect response shape must not contain secret fields."""
+    response = {
+        "status": "complete",
+        "current_stage": 5,
+        "stage_name": "AI Report",
+        "progress_message": "Done",
+        "message_queue": [{"type": "progress", "stage": 1, "message": "ok"}],
+        "transcript": [{"start": 0, "end": 1, "speaker": "A", "text": "hi"}],
+        "report": "# Report",
+        "metadata": {"source_file": "call.mp3"},
+        "error": None,
+    }
+    secret_fields = list(_contains_secret_key(response))
+    assert secret_fields == [], f"Reconnect response contains secret-looking keys: {secret_fields}"
+
+
+def test_websocket_complete_message_contains_no_secret_keys():
+    """The WebSocket complete message must not contain secret fields."""
+    message = {
+        "type": "complete",
+        "transcript": [{"start": 0, "end": 1, "speaker": "A", "text": "hi"}],
+        "report": "# Report",
+        "metadata": {"source_file": "call.mp3", "context": "friend"},
+    }
+    secret_fields = list(_contains_secret_key(message))
+    assert secret_fields == [], f"WS complete message contains secret-looking keys: {secret_fields}"
+
+
+def test_settings_keys_not_in_job_dict_keys():
+    """API keys from settings must never appear as job dict keys."""
+    from config import Settings
+    secret_attrs = {"huggingface_token", "gemini_api_key", "anthropic_api_key"}
+    job_keys = {
+        "status", "params", "generate_report", "gemini_model",
+        "message_queue", "current_stage", "stage_name", "progress_message",
+        "transcript", "metadata", "report_path", "report", "error",
+        "output_dir", "files", "report_path",
+    }
+    leaked = secret_attrs & job_keys
+    assert leaked == set(), f"Secret attributes found in job dict keys: {leaked}"
+
+
+def test_anthropic_sdk_does_not_leak_key_in_exceptions():
+    """Anthropic SDK auth errors must not include the API key in the message."""
+    import anthropic
+    fake_key = "sk-ant-FAKE-KEY-SHOULD-NOT-APPEAR-12345"
+    try:
+        client = anthropic.Anthropic(api_key=fake_key)
+        client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1,
+            messages=[{"role": "user", "content": "test"}],
+        )
+    except Exception as e:
+        error_str = str(e)
+        assert fake_key not in error_str, (
+            f"API key leaked in Anthropic exception: {error_str}"
+        )
+
+
+def test_error_message_from_validate_for_report_contains_no_key():
+    """validate_for_report error messages must not contain actual key values."""
+    from config import Settings
+    s = Settings()
+    s.gemini_api_key = "SUPER-SECRET-GEMINI-KEY"
+    s.anthropic_api_key = "SUPER-SECRET-ANTHROPIC-KEY"
+
+    s_empty_anthropic = Settings()
+    s_empty_anthropic.anthropic_api_key = ""
+    try:
+        s_empty_anthropic.validate_for_report("claude-haiku-4-5-20251001")
+    except EnvironmentError as e:
+        assert "SUPER-SECRET" not in str(e)
+
+    s_empty_gemini = Settings()
+    s_empty_gemini.gemini_api_key = ""
+    try:
+        s_empty_gemini.validate_for_report("gemini-3-flash-preview")
+    except EnvironmentError as e:
+        assert "SUPER-SECRET" not in str(e)
+
+
+def test_env_file_is_gitignored():
+    """The .env file must be listed in .gitignore."""
+    gitignore_path = os.path.join(os.path.dirname(__file__), "..", ".gitignore")
+    if os.path.isfile(gitignore_path):
+        with open(gitignore_path) as f:
+            lines = [line.strip() for line in f]
+        assert ".env" in lines, ".env is not in .gitignore"

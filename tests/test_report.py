@@ -264,3 +264,37 @@ def test_run_requires_anthropic_api_key(tmp_path, sample_segments):
     s.anthropic_api_key = ""
     with pytest.raises(EnvironmentError, match="ANTHROPIC_API_KEY"):
         s.validate_for_report("claude-haiku-4-5-20251001")
+
+
+# ---------------------------------------------------------------------------
+# API key leak prevention — report output files
+# ---------------------------------------------------------------------------
+
+def test_report_output_does_not_contain_api_key(tmp_path, sample_segments):
+    """Report file content must not contain any API key values."""
+    fake_gemini_key = "FAKE-GEMINI-KEY-SHOULD-NOT-APPEAR"
+    fake_anthropic_key = "FAKE-ANTHROPIC-KEY-SHOULD-NOT-APPEAR"
+
+    with patch("stages.report._call_gemini", return_value=("Report body", "gemini-3-flash-preview")):
+        with patch("stages.report._genai") as mock_genai:
+            mock_genai.Client.return_value = MagicMock()
+            from stages import report as report_module
+            report_module._genai = mock_genai
+
+            out_path = report_module.run(
+                segments=sample_segments,
+                source_file="call.mp3",
+                output_dir=str(tmp_path),
+                context="friend",
+                num_speakers=2,
+                audio_duration=None,
+                speaker_counts={"Speaker A": 2, "Speaker B": 1},
+                prompts_dir=str(tmp_path / "prompts"),
+                gemini_model="gemini-3-flash-preview",
+                gemini_api_key=fake_gemini_key,
+                anthropic_api_key=fake_anthropic_key,
+            )
+
+    content = open(out_path, encoding="utf-8").read()
+    assert fake_gemini_key not in content, "Gemini API key leaked into report file"
+    assert fake_anthropic_key not in content, "Anthropic API key leaked into report file"

@@ -260,3 +260,27 @@ def test_write_relabelled_adds_relabelled_at(
     with open(out_path, encoding="utf-8") as f:
         data = json.load(f)
     assert "relabelled_at" in data["metadata"]
+
+
+# ---------------------------------------------------------------------------
+# API key leak prevention — exported files
+# ---------------------------------------------------------------------------
+
+_SECRET_PATTERNS = ("api_key", "api-key", "token", "secret", "password", "credential")
+
+
+def test_json_output_contains_no_secret_fields(tmp_output_dir, sample_segments):
+    """Exported JSON must not contain fields that look like secrets."""
+    txt_path, json_path = run(
+        segments=sample_segments,
+        source_file="call.mp3",
+        output_dir=tmp_output_dir,
+        context="friend",
+    )
+    with open(json_path, encoding="utf-8") as f:
+        raw = f.read()
+
+    for pattern in _SECRET_PATTERNS:
+        assert pattern not in raw.lower(), (
+            f"JSON output contains secret-looking field: {pattern}"
+        )
