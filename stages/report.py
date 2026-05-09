@@ -110,14 +110,14 @@ FALLBACK_MODEL = "gemini-3-flash-preview"
 
 
 def _call_gemini_model(client, system_prompt: str, user_message: str, model: str) -> str:
-    """Send one request to Gemini with a 5-minute timeout and return the response text."""
+    """Send one request to Gemini and return the response text."""
     from google.genai import types
     full_prompt = f"{system_prompt}\n\n{user_message}"
     response = client.models.generate_content(
         model=model,
         contents=full_prompt,
         config=types.GenerateContentConfig(
-            http_options=types.HttpOptions(timeout=300)
+            http_options=types.HttpOptions(timeout=300_000)
         ),
     )
     return response.text
