@@ -570,6 +570,8 @@ async def analyse(
     gemini_model: str = Form("claude-haiku-4-5-20251001"),
     context_hints: str = Form(""),
 ):
+    print(f"[debug] /analyse received model: {gemini_model}")
+    print(f"[debug] model valid: {gemini_model in ALLOWED_GEMINI_MODELS}")
     if gemini_model not in ALLOWED_GEMINI_MODELS:
         gemini_model = "claude-haiku-4-5-20251001"
 
@@ -630,10 +632,10 @@ async def report_from_json(
     gemini_model: str = Form("claude-haiku-4-5-20251001"),
     context_hints: str = Form(""),
 ):
+    print(f"[debug] /report-from-json received model: {gemini_model}")
+    print(f"[debug] model valid: {gemini_model in ALLOWED_GEMINI_MODELS}")
     if gemini_model not in ALLOWED_GEMINI_MODELS:
         gemini_model = "claude-haiku-4-5-20251001"
-
-    print(f"[debug] report-from-json received: model={gemini_model}, context={context}")
 
     # Read bytes first so we can inspect the metadata before choosing a folder
     content = await file.read()
