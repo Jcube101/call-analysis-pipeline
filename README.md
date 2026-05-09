@@ -312,7 +312,7 @@ Run the pytest unit test suite:
 pytest tests/ -v
 ```
 
-Covers: config loading, export formatting, API job recovery, report prompt loading and model fallback.
+Covers: config loading, export formatting, API job recovery, report prompt loading, model fallback, and API key leak prevention across all output surfaces.
 
 ### Integration tests (manual, completed)
 

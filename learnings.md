@@ -499,3 +499,15 @@ Patch `stages.report._call_gemini` / `stages.report._call_claude` or the `_model
 ### FastAPI TestClient for future automated API tests
 
 `from fastapi.testclient import TestClient` allows calling all API endpoints without starting a real server. Useful for automated regression tests against the full endpoint surface. No torch/pyannote required as long as the pipeline stages are stubbed.
+
+### API key leak prevention tests
+
+Secrets can leak through several surfaces: API response bodies, WebSocket messages, error messages, output files, and git history. The test suite verifies all of them:
+
+1. **Structural checks** — recursively scan job dict, `/reconnect` response, and WebSocket `complete` message for keys matching secret patterns (`api_key`, `token`, `secret`, `password`, `credential`).
+2. **SDK exception checks** — verify that Anthropic SDK auth errors don't include the API key in `str(exc)` (important because `_push_error` sends `str(exc)` to clients via WebSocket).
+3. **Validation error checks** — verify `validate_for_report()` error messages reference env var *names*, not *values*.
+4. **Output file checks** — verify report `.md` and export `.json` files don't contain API key values passed to `report.run()`.
+5. **Git check** — verify `.env` appears in `.gitignore`.
+
+These tests catch regressions if someone adds an API key field to the job dict or includes key values in error messages.

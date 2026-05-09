@@ -100,7 +100,7 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 - [x] **Sub-modes renamed** — "Analyse Audio" and "Report from Transcript"
 - [x] **Model selector helper text** — explains Claude Haiku vs Sonnet and Gemini Flash vs Pro tradeoffs
 - [x] **Demo tab Markdown rendering fixed**
-- [x] **Unit test suite** — pytest, 4 modules (config, export, api, report), 79 tests, all passing
+- [x] **Unit test suite** — pytest, 4 modules (config, export, api, report), 88 tests, all passing; includes API key leak prevention tests across all output surfaces
 - [x] **Integration tests completed manually** — full pipeline on real M4A files, all stages, Claude and Gemini models, two-pass renaming workflow
 - [x] **API tests completed manually** — all endpoints validated: /analyse, /report-from-json, /status, /reconnect, /download/*, WebSocket, disk recovery
 

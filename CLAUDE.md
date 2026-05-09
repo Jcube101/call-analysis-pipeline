@@ -291,10 +291,10 @@ Pipeline threads catch `BaseException` (not just `Exception`) because ctranslate
 ## Tests
 
 Unit tests live in `tests/`:
-- `tests/test_config.py` — settings loading, overrides, env var parsing, `validate_for_report()` with/without API key
-- `tests/test_export.py` — timestamp formatting, JSON schema, speaker name mapping, unique file naming, `write_relabelled()`
-- `tests/test_api.py` — `get_or_recover_job()` in-memory and disk recovery, glob filter patterns, job state structure, `ALLOWED_GEMINI_MODELS`
-- `tests/test_report.py` — prompt loading from file and fallback defaults, transcript chunking, model fallback on 503, API key validation
+- `tests/test_config.py` — settings loading, overrides, env var parsing, `validate_for_report()` with per-provider API key checks
+- `tests/test_export.py` — timestamp formatting, JSON schema, speaker name mapping, unique file naming, `write_relabelled()`, secret field leak checks
+- `tests/test_api.py` — `get_or_recover_job()` in-memory and disk recovery, glob filter patterns, job state structure, `ALLOWED_GEMINI_MODELS`, API key leak prevention (job dict, /reconnect, WebSocket, SDK exceptions, .gitignore)
+- `tests/test_report.py` — prompt loading from file and fallback defaults, transcript chunking, model fallback on 503, Claude/Gemini API key validation, report output leak checks
 
 Run with: `pytest tests/ -v`
 
