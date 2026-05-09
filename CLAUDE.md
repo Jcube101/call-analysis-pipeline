@@ -217,11 +217,13 @@ Download endpoints serve directly from disk with no job status check — files a
 - `file`: audio upload (required)
 - `context`, `num_speakers`, `transcription_mode`, `language`, `speaker_names`, `word_timestamps`, `generate_report`, `skip_preprocess`, `whisper_model` — as documented elsewhere
 - `gemini_model: str` (default: `claude-haiku-4-5-20251001`) — model used for Stage 5. Allowed values: `claude-haiku-4-5-20251001`, `claude-sonnet-4-6-20251001`, `gemini-3-flash-preview`, `gemini-3.1-pro-preview`. Invalid values are silently replaced with the default.
+- `context_hints: str` (optional, default: `""`) — free-text hints for correct spelling of names, places, companies, and technical terms. Prepended to the system prompt when non-empty.
 
 **POST `/report-from-json` form parameters**:
 - `file`: transcript JSON upload (required)
 - `context`, `speaker_names` — as documented elsewhere
 - `gemini_model: str` (default: `claude-haiku-4-5-20251001`) — same allowed values and fallback as above.
+- `context_hints: str` (optional, default: `""`) — same as above.
 
 ### Job folder file naming
 

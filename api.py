@@ -407,6 +407,7 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
                     gemini_model=gemini_model,
                     gemini_api_key=settings.gemini_api_key,
                     anthropic_api_key=settings.anthropic_api_key,
+                    context_hints=job.get("context_hints", ""),
                 )
             finally:
                 _stop_hb.set()
@@ -497,6 +498,7 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
                 gemini_model=gemini_model,
                 gemini_api_key=settings.gemini_api_key,
                 anthropic_api_key=settings.anthropic_api_key,
+                context_hints=job.get("context_hints", ""),
             )
         finally:
             _stop_hb.set()
@@ -565,6 +567,7 @@ async def analyse(
     skip_preprocess: bool = Form(False),
     whisper_model: Optional[str] = Form(None),
     gemini_model: str = Form("claude-haiku-4-5-20251001"),
+    context_hints: str = Form(""),
 ):
     if gemini_model not in ALLOWED_GEMINI_MODELS:
         gemini_model = "claude-haiku-4-5-20251001"
@@ -601,6 +604,7 @@ async def analyse(
         "params": params,
         "generate_report": bool(generate_report),
         "gemini_model": gemini_model,
+        "context_hints": context_hints.strip(),
         "message_queue": [],
         "current_stage": None,
         "stage_name": None,
@@ -623,6 +627,7 @@ async def report_from_json(
     context: Optional[str] = Form(None),
     speaker_names: Optional[str] = Form(None),
     gemini_model: str = Form("claude-haiku-4-5-20251001"),
+    context_hints: str = Form(""),
 ):
     if gemini_model not in ALLOWED_GEMINI_MODELS:
         gemini_model = "claude-haiku-4-5-20251001"
@@ -668,6 +673,7 @@ async def report_from_json(
         "status": "queued",
         "params": params,
         "gemini_model": gemini_model,
+        "context_hints": context_hints.strip(),
         "message_queue": prior.get("message_queue", []),
         "current_stage": None,
         "stage_name": None,

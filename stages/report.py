@@ -202,6 +202,7 @@ def run(
     gemini_model: str = _MODEL,
     gemini_api_key: Optional[str] = None,
     anthropic_api_key: Optional[str] = None,
+    context_hints: str = "",
 ) -> str:
     """
     Run Stage 5.
@@ -227,6 +228,14 @@ def run(
     print(f"\n[Stage 5] Generating analysis report (context: {context}, model: {gemini_model})...")
 
     instruction_prompt = _load_prompt(context, prompts_dir)
+    if context_hints.strip():
+        instruction_prompt = (
+            "CONTEXT HINTS (use these for correct spelling "
+            "of names, places, companies, and technical terms "
+            "— do not infer alternatives):\n"
+            f"{context_hints.strip()}\n\n"
+            + instruction_prompt
+        )
     metadata_block = _build_metadata_block(
         source_file, context, num_speakers, audio_duration, speaker_counts
     )
