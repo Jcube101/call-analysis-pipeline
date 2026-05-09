@@ -94,15 +94,14 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 - [x] **Report from JSON writes back to original job folder** — `POST /report-from-json` links to existing job by `metadata.job_id`
 - [x] **Job disk recovery after server restart** — files persist in `output/jobs/{job_id}/`, served directly from disk with no status check
 - [x] **generate_report flag threading fix** — stored explicitly in job dict; explicit `bool()` cast handles string form values
-- [x] **Selectable Gemini model** — `gemini_model` param on both POST endpoints; allowed values: Flash (default), Pro, Flash Lite; invalid values silently replaced with default
-- [x] **Automatic fallback to Flash on Pro 503** — `_call_gemini` catches 503 and retries with `gemini-3-flash-preview`; actual model used is logged
-- [x] **5 minute Gemini API timeout** — `HttpOptions(timeout=300)` prevents indefinite hangs when Pro is overloaded
+- [x] **Selectable AI model** — `gemini_model` param on both POST endpoints; supports Claude models (`claude-haiku-4-5-20251001` default, `claude-sonnet-4-6-20251001`) and Gemini models (`gemini-3-flash-preview`, `gemini-3.1-pro-preview`); routes to correct provider based on prefix; invalid values silently replaced with default
+- [x] **Automatic fallback** — Claude models fall back to Haiku on failure; Gemini models fall back to Flash on 503; actual model used is logged
 - [x] **Stale state fix** — full reset between pipeline runs; `runId` pattern discards stale WebSocket messages from previous runs
 - [x] **Sub-modes renamed** — "Analyse Audio" and "Report from Transcript"
-- [x] **Model selector helper text** — explains Flash vs Pro vs Flash Lite tradeoffs
+- [x] **Model selector helper text** — explains Claude Haiku vs Sonnet and Gemini Flash vs Pro tradeoffs
 - [x] **Demo tab Markdown rendering fixed**
-- [x] **Unit test suite** — pytest, 4 modules (config, export, api, report), 74 tests, all passing
-- [x] **Integration tests completed manually** — full pipeline on real M4A files, all stages, all three Gemini models, two-pass renaming workflow
+- [x] **Unit test suite** — pytest, 4 modules (config, export, api, report), 79 tests, all passing
+- [x] **Integration tests completed manually** — full pipeline on real M4A files, all stages, Claude and Gemini models, two-pass renaming workflow
 - [x] **API tests completed manually** — all endpoints validated: /analyse, /report-from-json, /status, /reconnect, /download/*, WebSocket, disk recovery
 
 ### Usability

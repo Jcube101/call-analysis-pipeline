@@ -222,9 +222,10 @@ torch.cuda.synchronize()
 torch.cuda.empty_cache()
 gc.collect()
 torch.cuda.empty_cache()
-time.sleep(2)
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
+time.sleep(3)
 ```
-The `sleep(2)` gives the CUDA driver time to process the deallocation before the new model is loaded.
+The `sleep(3)` gives the CUDA driver time to process the deallocation before the new model is loaded. `PYTORCH_CUDA_ALLOC_CONF` is also set at the top of `api.py` before any torch imports to reduce fragmentation from the start.
 
 ### torchaudio not needed — use soundfile instead
 
@@ -296,7 +297,7 @@ future.result(timeout=5)  # confirm delivery or time out
 
 ### CUDA memory must be freed between pyannote and Whisper
 
-See Learning #12 (Windows-specific issues). The pattern `synchronize() + empty_cache() + gc.collect() + empty_cache() + sleep(2)` between Stage 2 and Stage 3 is required in the API server's background thread, not just in `diarize.run()` itself.
+See Learning #12 (Windows-specific issues). The pattern `synchronize() + empty_cache() + gc.collect() + empty_cache() + sleep(3)` between Stage 2 and Stage 3 is required in the API server's background thread, not just in `diarize.run()` itself. `PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128` is also set at startup and re-applied after the cache flush to reduce CUDA memory fragmentation.
 
 ### Set all job state atomically before sending the complete message
 
@@ -387,32 +388,39 @@ This two-pass approach is more reliable than trying to engineer perfect automati
 
 ---
 
-## 17. Gemini API reliability
+## 17. LLM API reliability and model selection
 
-### Pro times out on long transcripts under high demand
+### Claude API is the default provider
 
-`gemini-3.1-pro-preview` returns 503 after 10+ minutes on transcripts of 26 000+ characters when the API is under load. The google-genai SDK uses `tenacity` internally and retries before raising, so the visible wait time is longer than the API's stated limit. Always implement an explicit timeout.
+As of v1.0, Stage 5 defaults to `claude-haiku-4-5-20251001` via the Anthropic SDK. Claude models fall back to Haiku on any failure. Gemini models are still supported and fall back to Flash on 503.
 
-### Always set a timeout on Gemini API calls
+### Gemini HttpOptions timeout was incorrectly configured
 
-Without `HttpOptions(timeout=300)`, a hung Pro request waits indefinitely, blocking the pipeline thread and the user's browser. 300 seconds (5 minutes) is a reasonable ceiling — Flash completes in under 30 s; Pro completes in under 2 minutes under normal load.
+The `google-genai` SDK's `HttpOptions(timeout=...)` expects milliseconds, not seconds. `timeout=300` was interpreted as 300ms (effectively 1s after internal rounding), causing `INVALID_ARGUMENT: Manually set deadline 1s is too short` errors. The timeout config was removed entirely — the SDK's internal retry logic and the 503 fallback handle reliability without an explicit timeout.
 
-```python
-config=types.GenerateContentConfig(
-    http_options=types.HttpOptions(timeout=300)
-)
-```
+### Gemini Pro times out on long transcripts under high demand
 
-### Automatic fallback to Flash on 503 is essential for production reliability
+`gemini-3.1-pro-preview` returns 503 after 10+ minutes on transcripts of 26 000+ characters when the API is under load. The google-genai SDK uses `tenacity` internally and retries before raising, so the visible wait time is longer than the API's stated limit.
 
-Pro availability is intermittent. Without a fallback, a 503 surfaces as an error to the user even though Flash would have succeeded. The pattern:
+### Automatic fallback is essential for production reliability
+
+Both providers implement a fallback pattern — if the primary model fails, the request is retried with a cheaper, more reliable model:
 
 ```python
+# Claude fallback
+try:
+    return _call_claude_model(api_key, prompt, message, model), model
+except Exception as e:
+    if model != CLAUDE_FALLBACK_MODEL:
+        return _call_claude_model(api_key, prompt, message, CLAUDE_FALLBACK_MODEL), CLAUDE_FALLBACK_MODEL
+    raise
+
+# Gemini fallback (503 only)
 try:
     return _call_gemini_model(client, prompt, message, model), model
 except Exception as e:
-    if "503" in str(e) and model != FALLBACK_MODEL:
-        return _call_gemini_model(client, prompt, message, FALLBACK_MODEL), FALLBACK_MODEL
+    if "503" in str(e) and model != GEMINI_FALLBACK_MODEL:
+        return _call_gemini_model(client, prompt, message, GEMINI_FALLBACK_MODEL), GEMINI_FALLBACK_MODEL
     raise
 ```
 
@@ -420,9 +428,10 @@ Log which model actually ran so failures are diagnosable.
 
 ### Model tradeoffs in practice
 
-- **Flash** (`gemini-3-flash-preview`) — most reliable, handles transcripts of any length, completes in under 30 s. Default choice for calls longer than 15 minutes.
-- **Pro** (`gemini-3.1-pro-preview`) — noticeably deeper analysis on short calls (under 15 min), but unreliable on long transcripts and under high API demand. Worth trying for short, high-stakes calls.
-- **Flash Lite** (`gemini-3.1-flash-lite-preview`) — fastest, cheapest, good for quick summaries. Output quality is visibly lower on complex conversations.
+- **Claude Haiku** (`claude-haiku-4-5-20251001`) — default, fast, cost-effective, reliable. Good for most conversations.
+- **Claude Sonnet** (`claude-sonnet-4-6-20251001`) — deeper analysis, better for complex or high-stakes conversations.
+- **Gemini Flash** (`gemini-3-flash-preview`) — reliable, handles transcripts of any length, completes in under 30 s.
+- **Gemini Pro** (`gemini-3.1-pro-preview`) — deeper analysis on short calls (under 15 min), but unreliable on long transcripts and under high API demand.
 
 ---
 
@@ -483,9 +492,9 @@ Leave `stages.export` and `stages.report` as real modules so that `test_export.p
 
 Never write to the real `output/` directory in tests. Use pytest's `tmp_path` fixture — it creates a unique temporary directory per test and cleans it up automatically.
 
-### pytest-mock and unittest.mock are sufficient for Gemini API mocking
+### pytest-mock and unittest.mock are sufficient for API mocking
 
-Patch `stages.report._call_gemini` or `stages.report._call_gemini_model` rather than the SDK itself. This keeps tests stable against SDK version changes.
+Patch `stages.report._call_gemini` / `stages.report._call_claude` or the `_model` variants rather than the SDK itself. This keeps tests stable against SDK version changes. When testing `report.run()`, pass `gemini_model="gemini-3-flash-preview"` explicitly to test the Gemini path (default is now Claude).
 
 ### FastAPI TestClient for future automated API tests
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-A local Python pipeline that processes a recorded voice call and produces a clean, structured transcript with speaker attribution and an optional AI-generated analysis report. Audio processing runs fully locally (no cloud audio processing), GPU-accelerated, with all secrets managed via `.env`. Report generation uses the Gemini API.
+A local Python pipeline that processes a recorded voice call and produces a clean, structured transcript with speaker attribution and an optional AI-generated analysis report. Audio processing runs fully locally (no cloud audio processing), GPU-accelerated, with all secrets managed via `.env`. Report generation uses the Claude API by default (Anthropic), with Gemini API as an alternative.
 
 **Tested and working on Windows 11, Python 3.11, CUDA 12.1, GTX 1650.**
 
@@ -194,20 +194,24 @@ Same model and device setup. Merges consecutive same-speaker diarization segment
 
 ### Stage 5 — Analysis Report (`stages/report.py`)
 
-**Goal:** Generate a context-aware analysis report from the transcript using the Gemini API.
+**Goal:** Generate a context-aware analysis report from the transcript using an LLM API.
 
-Only runs when `--report` is passed. `GEMINI_API_KEY` is validated early (before Stages 1–4 begin) so the run fails fast if the key is missing.
+Only runs when `--report` is passed. The appropriate API key is validated early (before Stages 1–4 begin) so the run fails fast if the key is missing.
+
+Supports both Anthropic Claude (`claude-*` models) and Google Gemini (`gemini-*` models). The provider is selected automatically based on the model prefix.
 
 | Step | Implementation |
 |------|---------------|
-| API | `google-genai` SDK, `gemini-3-flash-preview` model |
+| Default API | `anthropic` SDK, `claude-haiku-4-5-20251001` model |
+| Alternative API | `google-genai` SDK, `gemini-3-flash-preview` model |
 | Prompt | Loaded from `prompts/<context>.md`; falls back to built-in defaults |
 | Metadata | Source file, context, speaker count, audio duration, per-speaker segment counts |
-| Chunking | Transcripts >500k chars split into overlapping chunks; partial reports synthesised in a second Gemini call |
+| Chunking | Transcripts >500k chars split into overlapping chunks; partial reports synthesised in a second API call |
 | Output | `output/<name>_<YYYYMMDD_HHMMSS>_report.md` |
 | Terminal preview | First 20 lines of the report are printed after Stage 5 completes |
+| Fallback | Claude models fall back to `claude-haiku-4-5-20251001` on failure; Gemini models fall back to `gemini-3-flash-preview` on 503 |
 
-**Prompt customisation:** Edit `prompts/<context>.md` to change what Gemini focuses on for each conversation type. The four built-in contexts are `friend`, `work`, `interview`, and `date`. Each prompt defines specific output sections and includes a speaker label reliability warning — pyannote's automatic diarisation can flip speaker labels on long recordings, so prompts instruct Gemini to base analysis on content rather than assuming label consistency.
+**Prompt customisation:** Edit `prompts/<context>.md` to change what the LLM focuses on for each conversation type. The four built-in contexts are `friend`, `work`, `interview`, and `date`. Each prompt defines specific output sections and includes a speaker label reliability warning — pyannote's automatic diarisation can flip speaker labels on long recordings, so prompts instruct the model to base analysis on content rather than assuming label consistency.
 
 **`--from-json` mode:** `main.py` supports `python main.py --from-json output/<name>.json` to run Stage 5 on an existing transcript without re-running Stages 1–4. Context and speaker count are read from the JSON metadata and can be overridden with `--context`.
 
@@ -218,6 +222,7 @@ Only runs when `--report` is passed. `GEMINI_API_KEY` is validated early (before
 | Setting | Env var | CLI flag | Default |
 |---------|---------|----------|---------|
 | `huggingface_token` | `HUGGINGFACE_TOKEN` | — | `""` |
+| `anthropic_api_key` | `ANTHROPIC_API_KEY` | — | `""` |
 | `gemini_api_key` | `GEMINI_API_KEY` | — | `""` |
 | `context` | `CONVERSATION_CONTEXT` | `--context` | `"friend"` |
 | `num_speakers` | `NUM_SPEAKERS` | `--num-speakers` | `None` (auto) |
@@ -235,7 +240,7 @@ Each stage is wrapped in `try/except` in `main.py`. On failure:
 - Prints `[error] Stage N (name) failed: <message>`
 - Exits with code 1
 - Stage 2 `EnvironmentError` (missing token) is caught separately with a more specific message
-- Stage 5 `EnvironmentError` (missing Gemini key) is caught and reported before any stage runs
+- Stage 5 `EnvironmentError` (missing API key for the selected model) is caught and reported before any stage runs
 
 `--dry-run` exits cleanly after config validation without executing any stage.
 
@@ -248,7 +253,7 @@ Each stage is wrapped in `try/except` in `main.py`. On failure:
 | 2:01 | ~82s | ~76s | ~2:41 |
 | 10:56 | ~56s | ~624s | ~11:27 |
 
-Stage 5 (Gemini report) adds ~4–10s depending on transcript length and API latency.
+Stage 5 (AI report) adds ~4–10s depending on transcript length, model choice, and API latency.
 
 ---
 
@@ -263,7 +268,7 @@ Stage 5 (Gemini report) adds ~4–10s depending on transcript length and API lat
 | Disk | ~1.5 GB for faster-whisper medium model cache |
 | GPU | Optional; CUDA 12.1 tested on GTX 1650 (sm_75) |
 | OS | macOS, Linux, Windows (no Unix-only shell commands) |
-| Internet | Required for Stage 5 (Gemini API calls) |
+| Internet | Required for Stage 5 (Claude or Gemini API calls) |
 
 ### Dependency install order (Windows / CPU-only)
 
@@ -284,6 +289,7 @@ pip install -r requirements.txt
 | `pyannote.audio` | `<4.0` | 4.0.4 requires torch>=2.8.0 (doesn't exist) |
 | `huggingface_hub` | `<1.0.0` | 1.x removed `use_auth_token` used by pyannote 3.x internals |
 | `google-genai` | `>=1.0.0` | Replaces deprecated `google-generativeai` package |
+| `anthropic` | `>=0.40.0` | Claude API for Stage 5 report generation (default provider) |
 
 ---
 
@@ -292,7 +298,7 @@ pip install -r requirements.txt
 - All audio processing is **fully local** — no audio is sent to any external service
 - faster-whisper runs offline after initial model download
 - pyannote model weights downloaded from HuggingFace once, cached locally
-- Stage 5 sends transcript text to the Gemini API — do not use `--report` if the recording is confidential
+- Stage 5 sends transcript text to the Claude or Gemini API — do not use `--report` if the recording is confidential
 - `.env` is gitignored; secrets never committed
 - `input/` and `output/` are gitignored; recordings and transcripts never committed
 
@@ -368,7 +374,7 @@ Three-layer setup for ngrok compatibility:
 
 ### Stage 5 heartbeat
 
-Gemini API calls take 30–60 s. A `_heartbeat_worker` daemon thread sends a progress ping every 10 s during Stage 5 to prevent ngrok from closing the idle WebSocket connection.
+LLM API calls can take 30–60 s. A `_heartbeat_worker` daemon thread sends a progress ping every 10 s during Stage 5 to prevent ngrok from closing the idle WebSocket connection.
 
 ---
 

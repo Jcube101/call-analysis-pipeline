@@ -1,6 +1,6 @@
 # Call Analysis Pipeline
 
-A Python pipeline that takes a recorded conversation and produces a clean, speaker-diarized, timestamped transcript and an AI-generated analysis report. Runs fully locally with GPU acceleration (report generation uses the Gemini API).
+A Python pipeline that takes a recorded conversation and produces a clean, speaker-diarized, timestamped transcript and an AI-generated analysis report. Runs fully locally with GPU acceleration (report generation uses the Claude API by default, with Gemini as an alternative).
 
 **Status: v1.0 — fully functional and tested end-to-end (GPU, Windows 11, GTX 1650). Validated on recordings up to 2h40m. Includes speaker re-identification and speaker name mapping.**
 
@@ -12,7 +12,7 @@ A Python pipeline that takes a recorded conversation and produces a clean, speak
 | 2 — Diarize | Speaker separation using `pyannote/speaker-diarization-3.1`; global re-identification via voice embeddings + KMeans clustering to fix label flipping on long recordings |
 | 3 — Transcribe | Transcription with faster-whisper (local, GPU-accelerated); two modes: `accurate` (default) and `fast` |
 | 4 — Export | Structured `.txt` and `.json` output with metadata header, uniquely named per run |
-| 5 — Report | AI-generated analysis report via Gemini API; triggered with `--report` |
+| 5 — Report | AI-generated analysis report via Claude API (default) or Gemini API; triggered with `--report` |
 
 ## Output
 
@@ -121,7 +121,9 @@ cp .env.example .env
 Edit `.env` and fill in:
 
 - `HUGGINGFACE_TOKEN` — required for speaker diarization. Get a token at https://huggingface.co/settings/tokens, then accept the model license at https://huggingface.co/pyannote/speaker-diarization-3.1
-- `GEMINI_API_KEY` — required for `--report` and Stage 5 report generation via the API. Get a free key at https://aistudio.google.com/app/apikey. Supported models (selectable via the web UI or `gemini_model` API parameter): `gemini-3-flash-preview` (default, most reliable for long transcripts), `gemini-3.1-pro-preview` (deeper analysis, better for short calls under 15 min), `gemini-3.1-flash-lite-preview` (fastest, best for quick summaries)
+- `ANTHROPIC_API_KEY` — required for `--report` with Claude models (default). Get a key at https://console.anthropic.com/settings/keys
+- `GEMINI_API_KEY` — required for `--report` with Gemini models. Get a free key at https://aistudio.google.com/app/apikey
+- Supported models (selectable via the web UI or `gemini_model` API parameter): `claude-haiku-4-5-20251001` (default, fast and cost-effective), `claude-sonnet-4-6-20251001` (deeper analysis), `gemini-3-flash-preview` (reliable for long transcripts), `gemini-3.1-pro-preview` (deeper analysis, better for short calls under 15 min)
 - `CONVERSATION_CONTEXT` — `friend`, `work`, `interview`, or `date`
 - `NUM_SPEAKERS` — integer (e.g. `2`) or leave blank for auto-detection
 - `TRANSCRIPTION_MODE` — `accurate` (default) or `fast`
@@ -217,9 +219,9 @@ The completion banner shows a full run summary:
 
 ### Analysis report (Stage 5)
 
-When `--report` is passed, Stage 5 sends the transcript to `gemini-3-flash-preview` and writes a context-aware Markdown report. The prompt is loaded from `prompts/<context>.md` — edit these files freely to customise the analysis focus.
+When `--report` is passed, Stage 5 sends the transcript to an LLM and writes a context-aware Markdown report. By default it uses `claude-haiku-4-5-20251001` via the Anthropic API; Gemini models are also supported. The model is selected automatically based on the `gemini_model` parameter prefix (`claude-*` → Anthropic, `gemini-*` → Google). The prompt is loaded from `prompts/<context>.md` — edit these files freely to customise the analysis focus.
 
-Each prompt defines structured output sections and includes a speaker reliability warning (pyannote's diarisation can flip labels on long recordings — Gemini is instructed to base analysis on content, not label consistency).
+Each prompt defines structured output sections and includes a speaker reliability warning (pyannote's diarisation can flip labels on long recordings — the LLM is instructed to base analysis on content, not label consistency).
 
 | Context | Output sections |
 |---------|----------------|
@@ -320,7 +322,7 @@ The following integration scenarios have been validated manually end-to-end:
 - Stage 2 diarization identifying 2 speakers
 - Stage 3 transcription in accurate and fast modes
 - Stage 4 export producing valid TXT and JSON with correct schema
-- Stage 5 Gemini report generation with all three models
+- Stage 5 report generation with Claude and Gemini models
 - Two-pass approach (pipeline → review → rename → report)
 - Report from Transcript mode with speaker renaming
 
@@ -353,7 +355,7 @@ ngrok http 8001
 ```
 
 ngrok's free tier drops idle WebSocket connections after ~30 s. The API handles this with:
-- A **heartbeat thread** during Stage 5 — sends a progress ping every 10 s to keep the WebSocket alive during the Gemini API call
+- A **heartbeat thread** during Stage 5 — sends a progress ping every 10 s to keep the WebSocket alive during the API call
 - A **`/reconnect/{job_id}` endpoint** — returns the full job state so clients can recover without re-processing
 
 ## Project structure
@@ -368,7 +370,7 @@ call-analysis-pipeline/
 │   ├── diarize.py        # Stage 2: speaker diarization
 │   ├── transcribe.py     # Stage 3: faster-whisper transcription
 │   ├── export.py         # Stage 4: output formatting
-│   └── report.py         # Stage 5: Gemini API analysis report
+│   └── report.py         # Stage 5: Claude/Gemini API analysis report
 ├── prompts/
 │   ├── friend.md         # Analysis prompt for friend conversations
 │   ├── work.md           # Analysis prompt for work conversations
