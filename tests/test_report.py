@@ -5,11 +5,15 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
+from stages import report
 from stages.report import (
-    FALLBACK_MODEL,
+    GEMINI_FALLBACK_MODEL,
+    CLAUDE_FALLBACK_MODEL,
     _DEFAULT_PROMPTS,
     _call_gemini,
     _call_gemini_model,
+    _call_claude,
+    _call_claude_model,
     _load_prompt,
     _split_transcript,
     _CHUNK_CHARS,
@@ -110,7 +114,7 @@ def test_transcript_chunking_exact_size():
 # ---------------------------------------------------------------------------
 
 def test_model_fallback_on_503():
-    """Falls back to FALLBACK_MODEL when the requested model returns a 503."""
+    """Falls back to GEMINI_FALLBACK_MODEL when the requested model returns a 503."""
     mock_client = MagicMock()
     fallback_response = MagicMock()
     fallback_response.text = "Fallback report content"
@@ -125,11 +129,11 @@ def test_model_fallback_on_503():
             mock_client, "system", "user", "gemini-3.1-pro-preview"
         )
 
-    assert actual_model == FALLBACK_MODEL
+    assert actual_model == GEMINI_FALLBACK_MODEL
     assert text == "Fallback report content"
     assert mock_call.call_count == 2
     # Second call used the fallback model
-    assert mock_call.call_args_list[1][0][3] == FALLBACK_MODEL
+    assert mock_call.call_args_list[1][0][3] == GEMINI_FALLBACK_MODEL
 
 
 def test_model_fallback_not_triggered_on_other_errors():
@@ -151,7 +155,7 @@ def test_model_fallback_not_triggered_when_already_flash():
     with patch("stages.report._call_gemini_model") as mock_call:
         mock_call.side_effect = Exception("503 UNAVAILABLE")
         with pytest.raises(Exception, match="503"):
-            _call_gemini(mock_client, "system", "user", FALLBACK_MODEL)
+            _call_gemini(mock_client, "system", "user", GEMINI_FALLBACK_MODEL)
 
     assert mock_call.call_count == 1
 
@@ -189,13 +193,34 @@ def test_report_saved_to_correct_path(tmp_path, sample_segments):
                 num_speakers=2,
                 audio_duration=15.8,
                 speaker_counts={"Speaker A": 2, "Speaker B": 1},
-                api_key="fake-key",
                 prompts_dir=str(tmp_path / "prompts"),
+                gemini_model="gemini-3-flash-preview",
+                gemini_api_key="fake-key",
             )
 
     assert os.path.isfile(out_path)
     assert out_path.endswith("_report.md")
     assert "test_call" in os.path.basename(out_path)
+
+
+def test_report_saved_to_correct_path_claude(tmp_path, sample_segments):
+    """Report file is saved correctly when using a Claude model."""
+    with patch("stages.report._call_claude", return_value=("# Claude report", "claude-haiku-4-5-20251001")):
+        out_path = report.run(
+            segments=sample_segments,
+            source_file="test_call.mp3",
+            output_dir=str(tmp_path),
+            context="friend",
+            num_speakers=2,
+            audio_duration=15.8,
+            speaker_counts={"Speaker A": 2, "Speaker B": 1},
+            prompts_dir=str(tmp_path / "prompts"),
+            gemini_model="claude-haiku-4-5-20251001",
+            anthropic_api_key="fake-key",
+        )
+
+    assert os.path.isfile(out_path)
+    assert out_path.endswith("_report.md")
 
 
 def test_report_file_contains_report_body(tmp_path, sample_segments):
@@ -214,8 +239,9 @@ def test_report_file_contains_report_body(tmp_path, sample_segments):
                 num_speakers=2,
                 audio_duration=None,
                 speaker_counts={"Speaker A": 2, "Speaker B": 1},
-                api_key="fake-key",
                 prompts_dir=str(tmp_path / "prompts"),
+                gemini_model="gemini-3-flash-preview",
+                gemini_api_key="fake-key",
             )
 
     content = open(out_path, encoding="utf-8").read()
@@ -223,13 +249,18 @@ def test_report_file_contains_report_body(tmp_path, sample_segments):
 
 
 def test_run_requires_gemini_api_key(tmp_path, sample_segments):
-    """run() raises EnvironmentError via settings.validate_for_report() when key is missing."""
-    # Directly patching the genai import path so we reach validate logic;
-    # but validate_for_report is called by the caller, not inside report.run().
-    # Verify that an empty api_key causes the Gemini client init to fail or
-    # that an explicit pre-check raises appropriately.
+    """validate_for_report() raises EnvironmentError when gemini key is missing for gemini model."""
     from config import Settings
     s = Settings()
     s.gemini_api_key = ""
     with pytest.raises(EnvironmentError, match="GEMINI_API_KEY"):
-        s.validate_for_report()
+        s.validate_for_report("gemini-3-flash-preview")
+
+
+def test_run_requires_anthropic_api_key(tmp_path, sample_segments):
+    """validate_for_report() raises EnvironmentError when anthropic key is missing for claude model."""
+    from config import Settings
+    s = Settings()
+    s.anthropic_api_key = ""
+    with pytest.raises(EnvironmentError, match="ANTHROPIC_API_KEY"):
+        s.validate_for_report("claude-haiku-4-5-20251001")

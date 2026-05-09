@@ -8,7 +8,7 @@ Takes an audio recording of a two-person conversation (MP3, M4A, WAV, or any ffm
 1. A noise-reduced WAV (`output/*_clean.wav`)
 2. A speaker-diarized, timestamped transcript (`output/<name>_<timestamp>.txt`)
 3. A structured JSON file ready for downstream analysis (`output/<name>_<timestamp>.json`)
-4. An AI-generated analysis report (`output/<name>_<timestamp>_report.md`) — triggered with `--report`, uses Gemini API
+4. An AI-generated analysis report (`output/<name>_<timestamp>_report.md`) — triggered with `--report`, uses Claude API (default) or Gemini API
 
 ## Status
 
@@ -50,7 +50,7 @@ stages/
   diarize.py     — Stage 2: speaker diarization (pyannote/speaker-diarization-3.1)
   transcribe.py  — Stage 3: faster-whisper transcription (runs locally, GPU-accelerated)
   export.py      — Stage 4: writes timestamped .txt and .json output
-  report.py      — Stage 5: Gemini API analysis report (--report flag only)
+  report.py      — Stage 5: Claude/Gemini API analysis report (--report flag only)
 prompts/
   friend.md      — analysis prompt for friend conversations (user-editable)
   work.md        — analysis prompt for work conversations (user-editable)
@@ -74,9 +74,8 @@ output/          — pipeline outputs land here (gitignored, must exist locally)
 - **Majority vote smoothing** should NOT be applied to interview-style recordings where one speaker dominates — it collapses minority-speaker segments into the majority speaker. MFCC re-identification helps with label drift on long recordings but cannot fix short-segment misattribution at conversation boundaries. Practical fix for label flipping: use `--from-json` with `--speaker-names` after reviewing the transcript.
 - **Job state must be set atomically before `_push_complete()`** — read the report file first (catching and printing any errors with `except Exception as e: print(...)`), then set `job["report"]`, `job["report_path"]`, `job["status"]`, and all other fields as a single block, then call `_push_complete()`. Never send a progress "Done" message before the file read completes. A bare `except: pass` on a report file read silently leaves `job["report"] = None`, causing the frontend to receive `"report": null` in the complete message.
 - **`/reconnect` report check**: use `if report is None:` (not `if not report:`) when deciding whether to re-read the report from disk — an empty string report is valid and should not trigger a redundant disk read.
-- **`gemini_model` parameter** — accepted by `POST /analyse` and `POST /report-from-json`. Allowed values: `gemini-3-flash-preview` (default), `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite-preview`. Invalid values are silently replaced with the default. Stored on the job dict so background threads read it from job state rather than function arguments.
-- **Automatic fallback to Flash on 503** — if the Gemini API returns a 503, `_call_gemini` retries the same request with `gemini-3-flash-preview` before raising. The model that actually ran is logged at Stage 5 completion.
-- **5 minute timeout on all Gemini API calls** — `HttpOptions(timeout=300)` is set on every `generate_content` call. Without it the process waits indefinitely when Pro is overloaded.
+- **`gemini_model` parameter** — accepted by `POST /analyse` and `POST /report-from-json`. Allowed values: `claude-haiku-4-5-20251001` (default), `claude-sonnet-4-6-20251001`, `gemini-3-flash-preview`, `gemini-3.1-pro-preview`. Invalid values are silently replaced with the default. Stored on the job dict so background threads read it from job state rather than function arguments. Routes to Claude or Gemini based on the model prefix.
+- **Automatic fallback** — Claude models fall back to `claude-haiku-4-5-20251001` on failure; Gemini models fall back to `gemini-3-flash-preview` on 503. The model that actually ran is logged at Stage 5 completion.
 - **Report-from-JSON folder linking** — `POST /report-from-json` reads `metadata.job_id` from the uploaded JSON before choosing an output directory. If that job folder exists on disk the report is written there, keeping all files for a call together. Otherwise a new `job_id` and folder are created.
 - **Each new pipeline run must generate a fresh `job_id`** — never reuse a previous `job_id`. The frontend must clear all state (jobId, transcript, report, error, WebSocket) before starting a new run. A `runId` (e.g. `Date.now()`) is useful to discard stale WebSocket messages from a previous run that arrive after the new run starts.
 
@@ -108,9 +107,9 @@ Two modes selectable via `TRANSCRIPTION_MODE` env var or `--transcription-mode` 
 
 **Do not** pre-merge diarization segments before transcription **in accurate mode**. pyannote commonly outputs many same-speaker segments with tiny gaps (<100ms) between them — merging them collapses entire speaking turns into one line. Fast mode intentionally merges into turns as that is its design goal.
 
-## Stage 5 — Gemini report
+## Stage 5 — AI report (Claude / Gemini)
 
-Stage 5 is optional and only runs when `--report` is passed. It sends the transcript to `gemini-3-flash-preview` via the `google-genai` SDK.
+Stage 5 is optional and only runs when `--report` is passed. It sends the transcript to `claude-haiku-4-5-20251001` via the `anthropic` SDK by default. Gemini models are also supported — the provider is selected automatically based on the model prefix (`claude-*` → Anthropic, `gemini-*` → Google).
 
 - Prompt loaded from `prompts/<context>.md` — user can edit these freely. Each prompt defines specific structured output sections and embeds a speaker label reliability warning.
 - Falls back to built-in defaults if the prompt file is missing
@@ -155,7 +154,8 @@ This avoids a dependency on `torchcodec` (which is not installed). A `UserWarnin
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `HUGGINGFACE_TOKEN` | Yes | For pyannote diarization model download |
-| `GEMINI_API_KEY` | With `--report` | For Stage 5 report generation via Gemini API |
+| `ANTHROPIC_API_KEY` | With claude-* models | For Stage 5 report generation via Claude API |
+| `GEMINI_API_KEY` | With gemini-* models | For Stage 5 report generation via Gemini API |
 | `CONVERSATION_CONTEXT` | No | `friend` / `work` / `interview` / `date` / `public_interview` (default: `friend`) |
 | `NUM_SPEAKERS` | No | Integer or blank for auto-detect (default: auto) |
 | `WHISPER_MODEL` | No | `tiny` / `base` / `small` / `medium` / `large` (default: `medium`) |
@@ -216,12 +216,12 @@ Download endpoints serve directly from disk with no job status check — files a
 **POST `/analyse` form parameters** (all optional except `file`):
 - `file`: audio upload (required)
 - `context`, `num_speakers`, `transcription_mode`, `language`, `speaker_names`, `word_timestamps`, `generate_report`, `skip_preprocess`, `whisper_model` — as documented elsewhere
-- `gemini_model: str` (default: `gemini-3-flash-preview`) — Gemini model used for Stage 5. Allowed values: `gemini-3-flash-preview`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite-preview`. Invalid values are silently replaced with the default.
+- `gemini_model: str` (default: `claude-haiku-4-5-20251001`) — model used for Stage 5. Allowed values: `claude-haiku-4-5-20251001`, `claude-sonnet-4-6-20251001`, `gemini-3-flash-preview`, `gemini-3.1-pro-preview`. Invalid values are silently replaced with the default.
 
 **POST `/report-from-json` form parameters**:
 - `file`: transcript JSON upload (required)
 - `context`, `speaker_names` — as documented elsewhere
-- `gemini_model: str` (default: `gemini-3-flash-preview`) — same allowed values and fallback as above.
+- `gemini_model: str` (default: `claude-haiku-4-5-20251001`) — same allowed values and fallback as above.
 
 ### Job folder file naming
 
@@ -314,7 +314,7 @@ A web frontend at job-joseph.com consumes the API. It connects to the ngrok-expo
 
 **Sub-modes:** "Analyse Audio" (full pipeline) and "Report from Transcript" (Stage 5 only from uploaded JSON). Switching between sub-modes clears all result state.
 
-**Gemini model selector:** Available in advanced options. Selection is persisted to `localStorage` key `"cap_gemini_model"`. Helper text explains the tradeoffs (Flash for long calls, Pro for shorter calls where deeper analysis matters, Flash Lite for quick summaries).
+**Model selector:** Available in advanced options. Selection is persisted to `localStorage` key `"cap_gemini_model"`. Supports both Claude models (Haiku for fast/cheap, Sonnet for deeper analysis) and Gemini models (Flash, Pro).
 
 **State reset between runs:** All state — `jobId`, transcript, report, error, and the active WebSocket — is fully cleared before each new run. A `runId` (set to `Date.now()` at run start) is compared on every incoming WebSocket message; messages from a previous run are discarded. "Try Again" and sub-mode switching both trigger a full reset.
 

@@ -1,7 +1,8 @@
 """
-Stage 5 — Analysis Report (Gemini API)
+Stage 5 — Analysis Report (Gemini / Claude API)
 
-Sends the transcript to Google Gemini and writes a context-aware Markdown report.
+Sends the transcript to an LLM and writes a context-aware Markdown report.
+Supports both Google Gemini (gemini-* models) and Anthropic Claude (claude-* models).
 
 The prompt is loaded from prompts/<context>.md — edit those files to customise
 the analysis focus for each conversation type.
@@ -24,8 +25,8 @@ from typing import Optional
 # Loaded lazily so the import doesn't fail when --report is not used
 _genai = None
 
-# Model to use for report generation
-_MODEL = "gemini-3-flash-preview"
+# Default model for report generation
+_MODEL = "claude-haiku-4-5-20251001"
 
 # Max characters per chunk sent to Gemini (~1M token context, cap at 500k chars ~125k tokens)
 _CHUNK_CHARS = 500_000
@@ -106,19 +107,16 @@ def _build_metadata_block(
     return "\n".join(lines)
 
 
-FALLBACK_MODEL = "gemini-3-flash-preview"
+GEMINI_FALLBACK_MODEL = "gemini-3-flash-preview"
+CLAUDE_FALLBACK_MODEL = "claude-haiku-4-5-20251001"
 
 
 def _call_gemini_model(client, system_prompt: str, user_message: str, model: str) -> str:
     """Send one request to Gemini and return the response text."""
-    from google.genai import types
     full_prompt = f"{system_prompt}\n\n{user_message}"
     response = client.models.generate_content(
         model=model,
         contents=full_prompt,
-        config=types.GenerateContentConfig(
-            http_options=types.HttpOptions(timeout=300_000)
-        ),
     )
     return response.text
 
@@ -128,9 +126,33 @@ def _call_gemini(client, system_prompt: str, user_message: str, model: str) -> t
     try:
         return _call_gemini_model(client, system_prompt, user_message, model), model
     except Exception as e:
-        if "503" in str(e) and model != FALLBACK_MODEL:
-            print(f"[Stage 5] {model} unavailable, falling back to {FALLBACK_MODEL}...")
-            return _call_gemini_model(client, system_prompt, user_message, FALLBACK_MODEL), FALLBACK_MODEL
+        if "503" in str(e) and model != GEMINI_FALLBACK_MODEL:
+            print(f"[Stage 5] {model} unavailable, falling back to {GEMINI_FALLBACK_MODEL}...")
+            return _call_gemini_model(client, system_prompt, user_message, GEMINI_FALLBACK_MODEL), GEMINI_FALLBACK_MODEL
+        raise
+
+
+def _call_claude_model(api_key: str, system_prompt: str, user_message: str, model: str) -> str:
+    """Send one request to Claude and return the response text."""
+    import anthropic
+    client = anthropic.Anthropic(api_key=api_key)
+    message = client.messages.create(
+        model=model,
+        max_tokens=4096,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    return message.content[0].text
+
+
+def _call_claude(api_key: str, system_prompt: str, user_message: str, model: str) -> tuple[str, str]:
+    """Call Claude, falling back to Haiku on failure. Returns (response_text, actual_model)."""
+    try:
+        return _call_claude_model(api_key, system_prompt, user_message, model), model
+    except Exception as e:
+        if model != CLAUDE_FALLBACK_MODEL:
+            print(f"[Stage 5] {model} failed ({e}), falling back to {CLAUDE_FALLBACK_MODEL}...")
+            return _call_claude_model(api_key, system_prompt, user_message, CLAUDE_FALLBACK_MODEL), CLAUDE_FALLBACK_MODEL
         raise
 
 
@@ -175,35 +197,34 @@ def run(
     num_speakers: int,
     audio_duration: Optional[float],
     speaker_counts: dict[str, int],
-    api_key: str,
+    api_key: str = "",
     prompts_dir: str = "prompts",
     gemini_model: str = _MODEL,
+    gemini_api_key: Optional[str] = None,
+    anthropic_api_key: Optional[str] = None,
 ) -> str:
     """
     Run Stage 5.
 
-    Args:
-        segments:       Transcribed segments from Stage 3/4.
-        source_file:    Original input filename (for metadata).
-        output_dir:     Directory where the report is written.
-        context:        Conversation context tag.
-        num_speakers:   Number of detected speakers.
-        audio_duration: Audio length in seconds (may be None).
-        speaker_counts: Dict mapping speaker label → segment count.
-        api_key:        Google Gemini API key.
-        prompts_dir:    Directory containing <context>.md prompt files.
+    Routes to Claude or Gemini based on the gemini_model prefix.
+    For backwards compatibility, `api_key` is still accepted and used
+    as the Gemini key when `gemini_api_key` is not provided.
 
     Returns:
         Path to the written report file.
     """
-    global _genai
-    if _genai is None:
-        from google import genai as _genai_module
-        _genai = _genai_module
+    use_claude = gemini_model.startswith("claude-")
+
+    if use_claude:
+        _api_key = anthropic_api_key or ""
+    else:
+        _api_key = gemini_api_key or api_key or ""
+        global _genai
+        if _genai is None:
+            from google import genai as _genai_module
+            _genai = _genai_module
 
     print(f"\n[Stage 5] Generating analysis report (context: {context}, model: {gemini_model})...")
-
-    client = _genai.Client(api_key=api_key)
 
     instruction_prompt = _load_prompt(context, prompts_dir)
     metadata_block = _build_metadata_block(
@@ -214,15 +235,22 @@ def run(
     chunks = _split_transcript(transcript_text)
     n_chunks = len(chunks)
 
+    def _call(system_prompt: str, user_msg: str, model: str) -> tuple[str, str]:
+        if use_claude:
+            return _call_claude(_api_key, system_prompt, user_msg, model)
+        client = _genai.Client(api_key=_api_key)
+        return _call_gemini(client, system_prompt, user_msg, model)
+
     actual_model = gemini_model
+    provider = "Claude" if use_claude else "Gemini"
 
     if n_chunks == 1:
-        print(f"[Stage 5] Sending transcript to Gemini ({len(transcript_text):,} chars)...")
+        print(f"[Stage 5] Sending transcript to {provider} ({len(transcript_text):,} chars)...")
         user_message = (
             f"## Conversation metadata\n\n{metadata_block}\n\n"
             f"## Transcript\n\n{transcript_text}"
         )
-        report_body, actual_model = _call_gemini(client, instruction_prompt, user_message, gemini_model)
+        report_body, actual_model = _call(instruction_prompt, user_message, gemini_model)
     else:
         print(f"[Stage 5] Transcript is large — splitting into {n_chunks} chunks...")
         partial_reports: list[str] = []
@@ -233,7 +261,7 @@ def run(
                 f"## Conversation metadata\n\n{metadata_block}\n\n"
                 f"## Transcript (part {i} of {n_chunks})\n\n{chunk}"
             )
-            partial, actual_model = _call_gemini(client, instruction_prompt, user_message, gemini_model)
+            partial, actual_model = _call(instruction_prompt, user_message, gemini_model)
             partial_reports.append(f"### Part {i} of {n_chunks}\n\n{partial}")
 
         print(f"[Stage 5] Synthesising {n_chunks} partial reports...")
@@ -244,7 +272,7 @@ def run(
             "Maintain the analytical focus from the original instruction."
         )
         combined_partials = "\n\n---\n\n".join(partial_reports)
-        report_body, actual_model = _call_gemini(client, synthesis_prompt, combined_partials, gemini_model)
+        report_body, actual_model = _call(synthesis_prompt, combined_partials, gemini_model)
 
     print(f"[Stage 5] Report generated using {actual_model}")
 

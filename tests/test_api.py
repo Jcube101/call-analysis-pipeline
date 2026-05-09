@@ -61,12 +61,16 @@ def test_allowed_gemini_models_contains_pro():
     assert "gemini-3.1-pro-preview" in ALLOWED_GEMINI_MODELS
 
 
-def test_allowed_gemini_models_contains_flash_lite():
-    assert "gemini-3.1-flash-lite-preview" in ALLOWED_GEMINI_MODELS
+def test_allowed_models_contains_claude_haiku():
+    assert "claude-haiku-4-5-20251001" in ALLOWED_GEMINI_MODELS
 
 
-def test_allowed_gemini_models_has_three_entries():
-    assert len(ALLOWED_GEMINI_MODELS) == 3
+def test_allowed_models_contains_claude_sonnet():
+    assert "claude-sonnet-4-6-20251001" in ALLOWED_GEMINI_MODELS
+
+
+def test_allowed_gemini_models_has_four_entries():
+    assert len(ALLOWED_GEMINI_MODELS) == 4
 
 
 # ---------------------------------------------------------------------------
