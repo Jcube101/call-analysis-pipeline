@@ -424,7 +424,7 @@ except Exception as e:
     raise
 ```
 
-Log which model actually ran so failures are diagnosable.
+Log which model actually ran so failures are diagnosable. The report markdown header now includes a `**Model:**` line showing the actual model used (including fallback), so users can see which model generated the report without checking server logs.
 
 ### Model tradeoffs in practice
 
@@ -511,3 +511,11 @@ Secrets can leak through several surfaces: API response bodies, WebSocket messag
 5. **Git check** — verify `.env` appears in `.gitignore`.
 
 These tests catch regressions if someone adds an API key field to the job dict or includes key values in error messages.
+
+---
+
+## 20. Context hints for proper noun accuracy
+
+Whisper often misspells names, places, companies, and technical terms. The `context_hints` parameter (accepted by both `POST /analyse` and `POST /report-from-json`) lets the user provide free-text hints that are prepended to the system prompt. The LLM then uses the correct spelling in its report output.
+
+The hints are prepended as a labelled block before the instruction prompt, so they apply to both Claude and Gemini paths without duplicating logic. They are stored on the job dict as `job["context_hints"]` and passed through to `report.run()`. This is a per-request parameter, not a config value — it doesn't belong in `.env`.

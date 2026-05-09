@@ -219,7 +219,7 @@ The completion banner shows a full run summary:
 
 ### Analysis report (Stage 5)
 
-When `--report` is passed, Stage 5 sends the transcript to an LLM and writes a context-aware Markdown report. By default it uses `claude-haiku-4-5-20251001` via the Anthropic API; Gemini models are also supported. The model is selected automatically based on the `gemini_model` parameter prefix (`claude-*` → Anthropic, `gemini-*` → Google). The prompt is loaded from `prompts/<context>.md` — edit these files freely to customise the analysis focus.
+When `--report` is passed, Stage 5 sends the transcript to an LLM and writes a context-aware Markdown report. By default it uses `claude-haiku-4-5-20251001` via the Anthropic API; Gemini models are also supported. The model is selected automatically based on the `gemini_model` parameter prefix (`claude-*` → Anthropic, `gemini-*` → Google). The prompt is loaded from `prompts/<context>.md` — edit these files freely to customise the analysis focus. The report header includes the model that was actually used (including any fallback).
 
 Each prompt defines structured output sections and includes a speaker reliability warning (pyannote's diarisation can flip labels on long recordings — the LLM is instructed to base analysis on content, not label consistency).
 
@@ -288,6 +288,8 @@ Then paste the ngrok URL into the Backend URL field at **job-joseph.com/projects
 | WS | `/ws/{job_id}` | WebSocket — real-time progress, `complete` message on finish |
 
 Jobs run one at a time (GPU constraint). All outputs land in `output/jobs/{job_id}/`. Job state is persisted to disk so the server can recover it after a restart.
+
+Both `POST /analyse` and `POST /report-from-json` accept an optional `context_hints` parameter (free text) for correct spelling of names, places, companies, and technical terms. When provided, the hints are prepended to the system prompt so the LLM uses them for proper nouns in the report.
 
 ## Download endpoints
 

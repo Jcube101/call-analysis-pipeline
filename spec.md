@@ -206,8 +206,9 @@ Supports both Anthropic Claude (`claude-*` models) and Google Gemini (`gemini-*`
 | Alternative API | `google-genai` SDK, `gemini-3-flash-preview` model |
 | Prompt | Loaded from `prompts/<context>.md`; falls back to built-in defaults |
 | Metadata | Source file, context, speaker count, audio duration, per-speaker segment counts |
+| Context hints | Optional `context_hints` parameter prepended to system prompt for correct spelling of names, places, and terms |
 | Chunking | Transcripts >500k chars split into overlapping chunks; partial reports synthesised in a second API call |
-| Output | `output/<name>_<YYYYMMDD_HHMMSS>_report.md` |
+| Output | `output/<name>_<YYYYMMDD_HHMMSS>_report.md` — header includes source, context, speakers, actual model used, and timestamp |
 | Terminal preview | First 20 lines of the report are printed after Stage 5 completes |
 | Fallback | Claude models fall back to `claude-haiku-4-5-20251001` on failure; Gemini models fall back to `gemini-3-flash-preview` on 503 |
 
