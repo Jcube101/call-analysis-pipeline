@@ -75,7 +75,8 @@ output/          — pipeline outputs land here (gitignored, must exist locally)
 - **Job state must be set atomically before `_push_complete()`** — read the report file first (catching and printing any errors with `except Exception as e: print(...)`), then set `job["report"]`, `job["report_path"]`, `job["status"]`, and all other fields as a single block, then call `_push_complete()`. Never send a progress "Done" message before the file read completes. A bare `except: pass` on a report file read silently leaves `job["report"] = None`, causing the frontend to receive `"report": null` in the complete message.
 - **`/reconnect` report check**: use `if report is None:` (not `if not report:`) when deciding whether to re-read the report from disk — an empty string report is valid and should not trigger a redundant disk read.
 - **`gemini_model` parameter** — accepted by `POST /analyse` and `POST /report-from-json`. Allowed values: `claude-haiku-4-5-20251001` (default), `claude-sonnet-4-6`, `gemini-3-flash-preview`, `gemini-3.1-pro-preview`. Invalid values are silently replaced with the default. Stored on the job dict so background threads read it from job state rather than function arguments. Routes to Claude or Gemini based on the model prefix.
-- **Automatic fallback** — Claude models fall back to `claude-haiku-4-5-20251001` on failure; Gemini models fall back to `gemini-3-flash-preview` on 503. The model that actually ran is logged at Stage 5 completion.
+- **Automatic fallback** — Claude models fall back to `claude-haiku-4-5-20251001` on failure; Gemini models fall back to `gemini-3-flash-preview` on 503. The model that actually ran is logged at Stage 5 completion and shown in the report markdown header.
+- **`context_hints`** — stored on the job dict as `job["context_hints"]` and passed to `report.run()`. Per-request free-text parameter, not a config value. When non-empty, prepended to the system prompt as a "CONTEXT HINTS" block before the instruction prompt.
 - **Report-from-JSON folder linking** — `POST /report-from-json` reads `metadata.job_id` from the uploaded JSON before choosing an output directory. If that job folder exists on disk the report is written there, keeping all files for a call together. Otherwise a new `job_id` and folder are created.
 - **Each new pipeline run must generate a fresh `job_id`** — never reuse a previous `job_id`. The frontend must clear all state (jobId, transcript, report, error, WebSocket) before starting a new run. A `runId` (e.g. `Date.now()`) is useful to discard stale WebSocket messages from a previous run that arrive after the new run starts.
 
@@ -113,8 +114,9 @@ Stage 5 is optional and only runs when `--report` is passed. It sends the transc
 
 - Prompt loaded from `prompts/<context>.md` — user can edit these freely. Each prompt defines specific structured output sections and embeds a speaker label reliability warning.
 - Falls back to built-in defaults if the prompt file is missing
+- `context_hints` parameter prepended to the system prompt when non-empty — provides correct spelling of names, places, companies, and technical terms
 - Large transcripts (>500k chars) are chunked and partial reports synthesised
-- Output: `output/<name>_<timestamp>_report.md`
+- Output: `output/<name>_<timestamp>_report.md` — header includes source, context, speakers, actual model used (including fallback), and timestamp
 - First 20 lines printed to terminal as a preview
 
 **SDK note:** Use `google-genai` (not the deprecated `google-generativeai`). Import path is `from google import genai`. Client pattern: `client = genai.Client(api_key=...)`, then `client.models.generate_content(model=..., contents=...)`.
@@ -267,7 +269,8 @@ torch.cuda.synchronize()
 torch.cuda.empty_cache()
 gc.collect()
 torch.cuda.empty_cache()
-time.sleep(2)
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
+time.sleep(3)
 ```
 Without this, Whisper fails to allocate VRAM because pyannote has not fully released it.
 
@@ -280,7 +283,7 @@ Three layers to handle ngrok headers:
 
 ### Heartbeat during Stage 5
 
-The Gemini API call takes 30–60 s. ngrok free tier drops idle WebSocket connections after ~30 s. A `_heartbeat_worker` daemon thread sends a progress ping every 10 s during Stage 5 to keep the connection alive.
+The LLM API call (Claude or Gemini) takes 30–60 s. ngrok free tier drops idle WebSocket connections after ~30 s. A `_heartbeat_worker` daemon thread sends a progress ping every 10 s during Stage 5 to keep the connection alive.
 
 ### report-from-json folder linking
 
