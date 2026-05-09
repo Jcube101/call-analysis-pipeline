@@ -66,7 +66,7 @@ def test_allowed_models_contains_claude_haiku():
 
 
 def test_allowed_models_contains_claude_sonnet():
-    assert "claude-sonnet-4-6-20251001" in ALLOWED_GEMINI_MODELS
+    assert "claude-sonnet-4-6" in ALLOWED_GEMINI_MODELS
 
 
 def test_allowed_gemini_models_has_four_entries():

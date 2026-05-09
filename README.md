@@ -123,7 +123,7 @@ Edit `.env` and fill in:
 - `HUGGINGFACE_TOKEN` — required for speaker diarization. Get a token at https://huggingface.co/settings/tokens, then accept the model license at https://huggingface.co/pyannote/speaker-diarization-3.1
 - `ANTHROPIC_API_KEY` — required for `--report` with Claude models (default). Get a key at https://console.anthropic.com/settings/keys
 - `GEMINI_API_KEY` — required for `--report` with Gemini models. Get a free key at https://aistudio.google.com/app/apikey
-- Supported models (selectable via the web UI or `gemini_model` API parameter): `claude-haiku-4-5-20251001` (default, fast and cost-effective), `claude-sonnet-4-6-20251001` (deeper analysis), `gemini-3-flash-preview` (reliable for long transcripts), `gemini-3.1-pro-preview` (deeper analysis, better for short calls under 15 min)
+- Supported models (selectable via the web UI or `gemini_model` API parameter): `claude-haiku-4-5-20251001` (default, fast and cost-effective), `claude-sonnet-4-6` (deeper analysis), `gemini-3-flash-preview` (reliable for long transcripts), `gemini-3.1-pro-preview` (deeper analysis, better for short calls under 15 min)
 - `CONVERSATION_CONTEXT` — `friend`, `work`, `interview`, or `date`
 - `NUM_SPEAKERS` — integer (e.g. `2`) or leave blank for auto-detection
 - `TRANSCRIPTION_MODE` — `accurate` (default) or `fast`

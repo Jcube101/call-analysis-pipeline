@@ -94,7 +94,7 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 - [x] **Report from JSON writes back to original job folder** — `POST /report-from-json` links to existing job by `metadata.job_id`
 - [x] **Job disk recovery after server restart** — files persist in `output/jobs/{job_id}/`, served directly from disk with no status check
 - [x] **generate_report flag threading fix** — stored explicitly in job dict; explicit `bool()` cast handles string form values
-- [x] **Selectable AI model** — `gemini_model` param on both POST endpoints; supports Claude models (`claude-haiku-4-5-20251001` default, `claude-sonnet-4-6-20251001`) and Gemini models (`gemini-3-flash-preview`, `gemini-3.1-pro-preview`); routes to correct provider based on prefix; invalid values silently replaced with default
+- [x] **Selectable AI model** — `gemini_model` param on both POST endpoints; supports Claude models (`claude-haiku-4-5-20251001` default, `claude-sonnet-4-6`) and Gemini models (`gemini-3-flash-preview`, `gemini-3.1-pro-preview`); routes to correct provider based on prefix; invalid values silently replaced with default
 - [x] **Automatic fallback** — Claude models fall back to Haiku on failure; Gemini models fall back to Flash on 503; actual model used is logged
 - [x] **Stale state fix** — full reset between pipeline runs; `runId` pattern discards stale WebSocket messages from previous runs
 - [x] **Sub-modes renamed** — "Analyse Audio" and "Report from Transcript"

@@ -60,7 +60,7 @@ from config import VALID_CONTEXTS, Settings, settings
 
 ALLOWED_GEMINI_MODELS = [
     "claude-haiku-4-5-20251001",
-    "claude-sonnet-4-6-20251001",
+    "claude-sonnet-4-6",
     "gemini-3-flash-preview",
     "gemini-3.1-pro-preview",
 ]

@@ -429,7 +429,7 @@ Log which model actually ran so failures are diagnosable.
 ### Model tradeoffs in practice
 
 - **Claude Haiku** (`claude-haiku-4-5-20251001`) — default, fast, cost-effective, reliable. Good for most conversations.
-- **Claude Sonnet** (`claude-sonnet-4-6-20251001`) — deeper analysis, better for complex or high-stakes conversations.
+- **Claude Sonnet** (`claude-sonnet-4-6`) — deeper analysis, better for complex or high-stakes conversations.
 - **Gemini Flash** (`gemini-3-flash-preview`) — reliable, handles transcripts of any length, completes in under 30 s.
 - **Gemini Pro** (`gemini-3.1-pro-preview`) — deeper analysis on short calls (under 15 min), but unreliable on long transcripts and under high API demand.
 
