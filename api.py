@@ -32,11 +32,13 @@ GPU constraint
 
 from __future__ import annotations
 
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
+
 import asyncio
 import gc
 import glob as _glob
 import json
-import os
 import shutil
 import threading
 import time
@@ -325,9 +327,10 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
             torch.cuda.empty_cache()
             gc.collect()
             torch.cuda.empty_cache()
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
         except Exception:
             pass
-        time.sleep(2)
+        time.sleep(3)
         _push_progress(job_id, 2, "Diarize", f"Done — {len(segments)} segment(s)")
 
         # Stage 3 — Transcription
