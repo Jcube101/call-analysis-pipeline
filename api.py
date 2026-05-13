@@ -56,13 +56,22 @@ from fastapi.responses import FileResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-from config import VALID_CONTEXTS, Settings, settings
+from config import Settings, settings
 
 ALLOWED_GEMINI_MODELS = [
     "claude-haiku-4-5-20251001",
     "claude-sonnet-4-6",
     "gemini-3-flash-preview",
     "gemini-3.1-pro-preview",
+]
+
+ALLOWED_CONTEXTS = [
+    "friend",
+    "work",
+    "work_interview",
+    "date",
+    "public_interview",
+    "user_interview",
 ]
 
 # Snapshot of .env defaults taken once at startup — reused on every job reset
@@ -454,7 +463,7 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
         _configure_settings(params)
 
         # Inherit context and num_speakers from the JSON when not explicitly overridden
-        if params.get("context") is None and json_context in VALID_CONTEXTS:
+        if params.get("context") is None and json_context in ALLOWED_CONTEXTS:
             settings.context = json_context
         if params.get("num_speakers") is None and json_num_speakers is not None:
             settings.num_speakers = json_num_speakers
@@ -570,6 +579,8 @@ async def analyse(
 ):
     if gemini_model not in ALLOWED_GEMINI_MODELS:
         gemini_model = "claude-haiku-4-5-20251001"
+    if context is not None and context not in ALLOWED_CONTEXTS:
+        context = "friend"
 
     job_id = str(uuid.uuid4())
     job_dir = f"output/jobs/{job_id}"
@@ -630,6 +641,8 @@ async def report_from_json(
 ):
     if gemini_model not in ALLOWED_GEMINI_MODELS:
         gemini_model = "claude-haiku-4-5-20251001"
+    if context is not None and context not in ALLOWED_CONTEXTS:
+        context = "friend"
 
     # Read bytes first so we can inspect the metadata before choosing a folder
     content = await file.read()
