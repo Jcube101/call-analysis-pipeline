@@ -87,7 +87,7 @@ def _parse_args() -> argparse.Namespace:
         "--context",
         metavar="CTX",
         default=None,
-        help="Conversation context override: friend | work | interview | date",
+        help="Conversation context override: friend | work | work_interview | user_interview | public_interview | date",
     )
     parser.add_argument(
         "--num-speakers",
