@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VALID_CONTEXTS = {"friend", "work", "interview", "work_interview", "user_interview", "date", "public_interview"}
+VALID_CONTEXTS = {"friend", "work", "interview", "job_interview", "user_interview", "date", "public_interview"}
 VALID_TRANSCRIPTION_MODES = {"fast", "accurate"}
 
 

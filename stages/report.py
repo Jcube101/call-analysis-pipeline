@@ -52,7 +52,7 @@ _DEFAULT_PROMPTS: dict[str, str] = {
         "and an overall recommendation (proceed / hold / pass). Write a concise Markdown "
         "report backed by specific examples."
     ),
-    "work_interview": (
+    "job_interview": (
         "Analyse this job interview transcript. Cover: candidate strengths, weaknesses/gaps, "
         "communication style, notable answers, cultural fit, suggested follow-up questions, "
         "and an overall recommendation (proceed / hold / pass). Write a concise Markdown "
@@ -78,6 +78,9 @@ def _load_prompt(context: str, prompts_dir: str) -> str:
     if os.path.isfile(prompt_path):
         with open(prompt_path, "r", encoding="utf-8") as f:
             return f.read().strip()
+    # "interview" is a legacy alias for "job_interview"
+    if context == "interview":
+        context = "job_interview"
     return _DEFAULT_PROMPTS.get(context, _DEFAULT_PROMPTS["friend"])
 
 
