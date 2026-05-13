@@ -124,7 +124,7 @@ Edit `.env` and fill in:
 - `ANTHROPIC_API_KEY` — required for `--report` with Claude models (default). Get a key at https://console.anthropic.com/settings/keys
 - `GEMINI_API_KEY` — required for `--report` with Gemini models. Get a free key at https://aistudio.google.com/app/apikey
 - Supported models (selectable via the web UI or `gemini_model` API parameter): `claude-haiku-4-5-20251001` (default, fast and cost-effective), `claude-sonnet-4-6` (deeper analysis), `gemini-3-flash-preview` (reliable for long transcripts), `gemini-3.1-pro-preview` (deeper analysis, better for short calls under 15 min)
-- `CONVERSATION_CONTEXT` — `friend`, `work`, `job_interview`, `user_interview`, `public_interview`, or `date`
+- `CONVERSATION_CONTEXT` — `friend`, `work`, `work_interview`, `user_interview`, `public_interview`, or `date`
 - `NUM_SPEAKERS` — integer (e.g. `2`) or leave blank for auto-detection
 - `TRANSCRIPTION_MODE` — `accurate` (default) or `fast`
 - `WHISPER_LANGUAGE` — BCP-47 language code, e.g. `en`, `fr`, `es` (default: `en`)
@@ -227,7 +227,7 @@ Each prompt defines structured output sections and includes a speaker reliabilit
 |---------|----------------|
 | `friend` | Summary, mood/energy, main topics, highlights, concerns, conversation dynamics, recurring themes |
 | `work` | Executive summary, participants, decisions, action item table (what/owner/deadline), open questions, topics, risks, meeting effectiveness |
-| `job_interview` | Speaker ID inference, candidate overview, strengths/concerns with evidence, comms style, cultural/motivational fit, candidate questions, suggested follow-ups, recommendation |
+| `work_interview` | Speaker ID inference, candidate overview, strengths/concerns with evidence, comms style, cultural/motivational fit, candidate questions, suggested follow-ups, recommendation |
 | `user_interview` | Speaker ID, participant profile, core problem, current behaviour and workarounds, trigger moments, goals, notable quotes, surprises/contradictions, open questions, signals summary |
 | `public_interview` | Speaker ID, context and stakes, key messages pushed, tough question handling, evasion patterns, credibility/consistency, memorable quotes, journalist performance, overall assessment |
 | `date` | Vibe, conversation balance, common ground, differences, highlights, awkward moments, self-revelations, green/red flags, overall assessment |
@@ -377,7 +377,7 @@ call-analysis-pipeline/
 ├── prompts/
 │   ├── friend.md              # Analysis prompt for friend conversations
 │   ├── work.md                # Analysis prompt for work conversations
-│   ├── job_interview.md       # Analysis prompt for job interviews
+│   ├── work_interview.md      # Analysis prompt for job interviews
 │   ├── user_interview.md      # Analysis prompt for user/PM interviews
 │   ├── public_interview.md    # Analysis prompt for public/media interviews
 │   └── date.md                # Analysis prompt for date conversations

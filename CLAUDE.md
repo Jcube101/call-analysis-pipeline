@@ -54,7 +54,7 @@ stages/
 prompts/
   friend.md           — analysis prompt for friend conversations (user-editable)
   work.md             — analysis prompt for work conversations (user-editable)
-  job_interview.md    — analysis prompt for job interviews (user-editable)
+  work_interview.md   — analysis prompt for job interviews (user-editable)
   user_interview.md   — analysis prompt for user/PM interviews (user-editable)
   public_interview.md — analysis prompt for public/media interviews (user-editable)
   date.md             — analysis prompt for date conversations (user-editable)
@@ -160,7 +160,7 @@ This avoids a dependency on `torchcodec` (which is not installed). A `UserWarnin
 | `HUGGINGFACE_TOKEN` | Yes | For pyannote diarization model download |
 | `ANTHROPIC_API_KEY` | With claude-* models | For Stage 5 report generation via Claude API |
 | `GEMINI_API_KEY` | With gemini-* models | For Stage 5 report generation via Gemini API |
-| `CONVERSATION_CONTEXT` | No | `friend` / `work` / `job_interview` / `user_interview` / `public_interview` / `date` (default: `friend`) |
+| `CONVERSATION_CONTEXT` | No | `friend` / `work` / `work_interview` / `user_interview` / `public_interview` / `date` (default: `friend`) |
 | `NUM_SPEAKERS` | No | Integer or blank for auto-detect (default: auto) |
 | `WHISPER_MODEL` | No | `tiny` / `base` / `small` / `medium` / `large` (default: `medium`) |
 | `TRANSCRIPTION_MODE` | No | `accurate` / `fast` (default: `accurate`) |
