@@ -514,6 +514,45 @@ These tests catch regressions if someone adds an API key field to the job dict o
 
 ---
 
+## 21. Validate context at the API boundary with an explicit allowlist
+
+### Rename context values cleanly — keep a legacy alias in the prompt loader
+
+The original `"interview"` context was renamed to `"work_interview"` to distinguish it from `"user_interview"` and `"public_interview"`. The rename touched: the prompt file (`interview.md` → `work_interview.md`), `VALID_CONTEXTS` in `config.py`, `_DEFAULT_PROMPTS` in `stages/report.py`, and all docs.
+
+To avoid breaking existing transcript JSONs that carry `"context": "interview"` in their metadata, a one-line alias was added in `_load_prompt()` rather than removing the old value from `VALID_CONTEXTS`:
+
+```python
+if context == "interview":
+    context = "work_interview"
+return _DEFAULT_PROMPTS.get(context, _DEFAULT_PROMPTS["friend"])
+```
+
+This keeps backward compatibility for the pipeline internals without exposing the legacy value through the API.
+
+### Add an ALLOWED_CONTEXTS list in api.py — don't delegate validation to config
+
+`config.py`'s `settings.override()` raises `ValueError` on invalid context. That exception propagates into the background pipeline thread and surfaces as a job error to the user. Better to validate at the API boundary and silently default to `"friend"` before the job is even queued:
+
+```python
+ALLOWED_CONTEXTS = [
+    "friend",
+    "work",
+    "work_interview",
+    "date",
+    "public_interview",
+    "user_interview",
+]
+
+# In each endpoint, right after gemini_model validation:
+if context is not None and context not in ALLOWED_CONTEXTS:
+    context = "friend"
+```
+
+This mirrors the existing pattern for `ALLOWED_GEMINI_MODELS`. The list also replaces the `VALID_CONTEXTS` import from `config.py` in `api.py` — the API layer owns its own validation; `config.py` owns the pipeline-level set.
+
+---
+
 ## 20. Context hints for proper noun accuracy
 
 Whisper often misspells names, places, companies, and technical terms. The `context_hints` parameter (accepted by both `POST /analyse` and `POST /report-from-json`) lets the user provide free-text hints that are prepended to the system prompt. The LLM then uses the correct spelling in its report output.
