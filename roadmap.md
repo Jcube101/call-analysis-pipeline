@@ -134,6 +134,29 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 
 ---
 
+## Alternative stack candidates
+
+### Voxtral (Mistral AI) — evaluate as pyannote + Whisper replacement
+Released July 2025, Apache 2.0. Combines transcription and speaker diarization in a single model — potentially replacing Stages 2 and 3 of the current pipeline with one model.
+
+Two relevant variants:
+- Voxtral Mini (3B) — local deployment, ~2-4GB, may fit GTX 1650
+- Voxtral Realtime (4B, Apache 2.0) — sub-200ms latency, built-in diarization, 13 languages, open weights on HuggingFace
+
+Why it matters:
+- Built-in diarization could fix the label drift problem on long single-mic recordings
+- Combining Stages 2+3 into one model simplifies the pipeline
+- Apache 2.0 means fully local, privacy-preserving deployment
+
+Evaluation plan:
+1. Run Verstappen interview through Voxtral Transcribe 2 API ($0.003/min, ~$0.025 for 8 mins) to compare diarization quality
+2. If quality is better, test Voxtral Realtime weights locally on GTX 1650 with quantization
+3. If VRAM fits, replace stages/diarize.py + stages/transcribe.py with a single stages/voxtral.py module
+
+Blocker: GTX 1650 has 4GB VRAM — Voxtral Realtime at 4B parameters needs quantization to fit. Current pipeline already hits VRAM pressure between Stage 2 and Stage 3.
+
+---
+
 ## Icebox (no timeline)
 
 - Speaker identification (match `Speaker A` to a known voice profile)
