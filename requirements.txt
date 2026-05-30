@@ -15,11 +15,11 @@ faster-whisper>=1.0.0
 # HuggingFace hub — must stay <1.0.0 for pyannote 3.x internal API compatibility
 huggingface_hub>=0.16.0,<1.0.0
 
-# PyTorch — CUDA 12.1 build for NVIDIA GPU (GTX 1650 / sm_75)
-# Install with: pip install torch==2.1.0+cu121 torchaudio==2.1.0+cu121 --index-url https://download.pytorch.org/whl/cu121
-# For CPU-only fallback: pip install torch==2.1.0+cpu torchaudio==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
-torch==2.1.0+cu121
-torchaudio==2.1.0+cu121
+# PyTorch — CUDA 12.4 build for NVIDIA GPU (GTX 1650 / sm_75)
+# Install with: pip install torch==2.5.1+cu124 torchaudio==2.5.1+cu124 --index-url https://download.pytorch.org/whl/cu124
+# For CPU-only fallback: pip install torch==2.5.1+cpu torchaudio==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cu124
+torchaudio==2.5.1+cu124
 
 # Config / utilities
 python-dotenv>=1.0.0

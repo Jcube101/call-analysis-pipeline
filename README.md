@@ -68,7 +68,7 @@ output/
 ## Two ways to use the pipeline
 
 1. **Terminal** — `python main.py --input input/call.mp3`
-2. **Web UI** — start `python api.py`, run `ngrok http 8001`, then open [job-joseph.com/projects/call-analysis](https://job-joseph.com/projects/call-analysis) and paste the ngrok URL into the Backend URL field
+2. **Web UI** — start `python api.py`, run `ngrok http 8010`, then open [job-joseph.com/projects/call-analysis](https://job-joseph.com/projects/call-analysis) and paste the ngrok URL into the Backend URL field
 
 ---
 
@@ -77,6 +77,7 @@ output/
 ### Prerequisites
 
 - Python 3.9+ (tested on 3.11)
+- PyTorch 2.5.1+cu124 (compatible with NVIDIA driver 581.15+)
 - `ffmpeg` on your PATH
 - [ngrok](https://ngrok.com/) (optional — only needed to expose the API server to a browser frontend)
 
@@ -100,8 +101,8 @@ venv\Scripts\activate          # Windows
 **Install dependencies — order matters on Windows/CPU setups:**
 
 ```bash
-# 1. PyTorch first (CPU build)
-pip install torch==2.1.0+cpu torchaudio==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
+# 1. PyTorch first (CUDA build; use +cpu suffix for CPU-only)
+pip install torch==2.5.1+cu124 torchaudio==2.5.1+cu124 --index-url https://download.pytorch.org/whl/cu124
 
 # 2. Pin numpy before anything else can upgrade it
 pip install "numpy<2.0" --force-reinstall
@@ -270,7 +271,7 @@ python api.py
 
 **Terminal 2 — ngrok tunnel:**
 ```bash
-ngrok http 8001
+ngrok http 8010
 ```
 
 Then paste the ngrok URL into the Backend URL field at **job-joseph.com/projects/call-analysis**.
@@ -354,7 +355,7 @@ The following API endpoints have been validated manually:
 To make the API reachable from a browser (e.g. a deployed frontend):
 
 ```bash
-ngrok http 8001
+ngrok http 8010
 ```
 
 ngrok's free tier drops idle WebSocket connections after ~30 s. The API handles this with:

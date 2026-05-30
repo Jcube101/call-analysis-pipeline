@@ -127,6 +127,7 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 - [ ] **Automated API tests** — FastAPI TestClient covering all endpoints without starting a real server
 - [ ] **CI/CD pipeline** — GitHub Actions running `pytest tests/` on every push
 - [ ] **Stereo audio support** — dedicated per-channel diarization for perfect speaker separation on two-mic recordings
+- [ ] **Pin NVIDIA driver version in README** to prevent silent CUDA compatibility breaks
 - [ ] **Manual speaker label correction UI** — in-browser editor to reassign speaker labels on the transcript before downloading
 - [ ] **Batch mode** — process multiple files from `input/` folder in sequence
 - [ ] **Watch mode** — auto-process new files as they appear in `input/`

@@ -553,6 +553,20 @@ This mirrors the existing pattern for `ALLOWED_GEMINI_MODELS`. The list also rep
 
 ---
 
+## 22. CUDA driver compatibility on Windows
+
+- NVIDIA driver updates can silently break PyTorch CUDA loading with WinError 1455 (paging file too small) — misleading error
+- Real cause: driver updated CUDA version (e.g. 12.1 → 13.0) but PyTorch was built for older CUDA
+- Diagnosis: check `nvidia-smi` CUDA version vs torch version cu suffix
+- Fix: reinstall torch with matching cu wheels:
+  ```bash
+  pip install torch==2.5.1+cu124 torchaudio==2.5.1+cu124 --index-url https://download.pytorch.org/whl/cu124
+  ```
+- cu124 wheels are forward compatible with CUDA 13.x drivers
+- `torch.cuda.is_available()` returning `True` does NOT mean all CUDA DLLs load correctly — full import test needed
+
+---
+
 ## 20. Context hints for proper noun accuracy
 
 Whisper often misspells names, places, companies, and technical terms. The `context_hints` parameter (accepted by both `POST /analyse` and `POST /report-from-json`) lets the user provide free-text hints that are prepended to the system prompt. The LLM then uses the correct spelling in its report output.

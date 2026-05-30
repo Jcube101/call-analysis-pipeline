@@ -75,6 +75,8 @@ output/          — pipeline outputs land here (gitignored, must exist locally)
 - **txt glob** excludes `"_report"` to avoid matching report files; **json glob** excludes `"named"` to avoid matching `transcript_named.json` as the fallback (named JSON takes priority over generic JSON).
 - **Majority vote smoothing** should NOT be applied to interview-style recordings where one speaker dominates — it collapses minority-speaker segments into the majority speaker. MFCC re-identification helps with label drift on long recordings but cannot fix short-segment misattribution at conversation boundaries. Practical fix for label flipping: use `--from-json` with `--speaker-names` after reviewing the transcript.
 - **Job state must be set atomically before `_push_complete()`** — read the report file first (catching and printing any errors with `except Exception as e: print(...)`), then set `job["report"]`, `job["report_path"]`, `job["status"]`, and all other fields as a single block, then call `_push_complete()`. Never send a progress "Done" message before the file read completes. A bare `except: pass` on a report file read silently leaves `job["report"] = None`, causing the frontend to receive `"report": null` in the complete message.
+- **PyTorch cu124 wheels** are forward compatible with CUDA 13.x drivers — use cu124 even if `nvidia-smi` reports CUDA 13.0.
+- **WinError 1455 (paging file too small)** — if `api.py` fails with this error, the root cause is usually a NVIDIA driver update that broke compatibility with the installed PyTorch CUDA version. Reinstall torch with the matching cu wheels to fix.
 - **`/reconnect` report check**: use `if report is None:` (not `if not report:`) when deciding whether to re-read the report from disk — an empty string report is valid and should not trigger a redundant disk read.
 - **`gemini_model` parameter** — accepted by `POST /analyse` and `POST /report-from-json`. Allowed values: `claude-haiku-4-5-20251001` (default), `claude-sonnet-4-6`, `gemini-3-flash-preview`, `gemini-3.1-pro-preview`. Invalid values are silently replaced with the default. Stored on the job dict so background threads read it from job state rather than function arguments. Routes to Claude or Gemini based on the model prefix.
 - **`context` parameter** — validated in `api.py` against `ALLOWED_CONTEXTS`: `friend`, `work`, `work_interview`, `date`, `public_interview`, `user_interview`. Invalid values are silently replaced with `"friend"`. The legacy `"interview"` value is no longer accepted; use `"work_interview"` instead.
@@ -97,7 +99,7 @@ The clean WAV is overwritten each run (Stage 1 output). Transcripts and reports 
 ## GPU / transcription stack
 
 Transcription uses **faster-whisper** (CTranslate2-based) instead of openai-whisper:
-- On CUDA: `device="cuda", compute_type="int8_float16"` — fits in 4 GB VRAM
+- On CUDA: `device="cuda", compute_type="int8_float16"` — fits in 4 GB VRAM (torch 2.5.1+cu124, upgraded from 2.1.0+cu121)
 - On CPU: `device="cpu", compute_type="int8"`
 
 **ctranslate2 CUDA teardown bug (Windows):** ctranslate2's `__del__` calls `exit()` when the WhisperModel is garbage-collected mid-process on Windows. Fixed by holding a module-level reference (`_active_model`) so cleanup is deferred to process exit. Do not add `del model` inside `transcribe.run()`.
@@ -175,7 +177,7 @@ Key packages: `pydub`, `noisereduce`, `pyannote.audio`, `faster-whisper`, `torch
 System dependency: `ffmpeg` must be on PATH (`main.py` checks this on startup).
 
 Key version constraints (all in `requirements.txt`):
-- `torch==2.1.0+cu121` — newer torch requires numpy 2.x which breaks pyannote
+- `torch==2.5.1+cu124` — compatible with NVIDIA driver 581.15 (CUDA 13.0) via cu124 wheels; newer torch requires numpy 2.x which breaks pyannote
 - `numpy<2.0` — pyannote compiled against numpy 1.x
 - `pyannote.audio<4.0` — 4.0.4 requires torch>=2.8.0 which doesn't exist yet
 - `huggingface_hub<1.0.0` — 1.x removed `use_auth_token` used internally by pyannote 3.x
@@ -186,7 +188,7 @@ Key version constraints (all in `requirements.txt`):
 Install torch **before** everything else so pip doesn't pull in a newer incompatible version later:
 
 ```bash
-pip install torch==2.1.0+cpu torchaudio==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
+pip install torch==2.5.1+cu124 torchaudio==2.5.1+cu124 --index-url https://download.pytorch.org/whl/cu124
 pip install "numpy<2.0" --force-reinstall
 pip install -r requirements.txt
 ```
@@ -196,7 +198,7 @@ pip install -r requirements.txt
 `api.py` exposes the full pipeline over HTTP + WebSocket. Start it with:
 
 ```bash
-uvicorn api:app --host 0.0.0.0 --port 8001
+uvicorn api:app --host 0.0.0.0 --port 8010
 ```
 
 Requires `fastapi`, `uvicorn`, `python-multipart` (not in `requirements.txt` — install separately or add them).
