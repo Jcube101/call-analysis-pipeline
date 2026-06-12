@@ -33,6 +33,7 @@ GPU constraint
 from __future__ import annotations
 
 import os
+os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "1")  # fixes torch.vmap CUDA error on PyTorch 2.5.x (pyannote wespeaker fbank)
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
 
 import asyncio

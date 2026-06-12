@@ -565,6 +565,29 @@ This mirrors the existing pattern for `ALLOWED_GEMINI_MODELS`. The list also rep
 - cu124 wheels are forward compatible with CUDA 13.x drivers
 - `torch.cuda.is_available()` returning `True` does NOT mean all CUDA DLLs load correctly — full import test needed
 
+### PyTorch 2.5.x introduces a torch.vmap CUDA dispatch regression (Stage 2)
+
+**Problem:** After upgrading from PyTorch 2.1.0+cu121 to 2.5.1+cu124, Stage 2 crashes with:
+```
+RuntimeError: CUDA error: unknown error
+```
+inside pyannote's wespeaker embedding model at `torch.vmap(self._fbank)(waveforms.to(fft_device))`.
+
+**Root cause:** PyTorch 2.5.x fully merged the functorch vmap backend into core. The new CUDA kernel dispatch path for batched FFT/spectral operations (used by wespeaker's filterbank feature extractor) hits a device-state synchronization race, yielding `CUDA_ERROR_UNKNOWN` (error 999). This is not OOM — VRAM usage is only ~284 MiB before the crash. pyannote 3.4.0 formally supports `torch>=2.0.0` but was never tested against 2.5.x.
+
+**Primary fix:** `CUDA_LAUNCH_BLOCKING=1` forces all CUDA kernel launches to be synchronous, eliminating the async dispatch race. Add to `.env` and set via `os.environ.setdefault` at the top of `api.py` before any torch import:
+```python
+os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "1")
+```
+- `setdefault` won't override if already set in the shell environment
+- Adds ~10–15% latency to Stage 2 (pyannote); no effect on Stage 3 (Whisper loads in a separate process context)
+- Safe to set on all PyTorch versions
+
+**Fallback fix (if CUDA_LAUNCH_BLOCKING causes unacceptable slowdown):** Downgrade to torch 2.4.1+cu124. The vmap regression was introduced in 2.5.0; 2.4.x avoids it while retaining cu124 CUDA 13.x driver compatibility:
+```bash
+pip install torch==2.4.1+cu124 torchaudio==2.4.1+cu124 --index-url https://download.pytorch.org/whl/cu124
+```
+
 ---
 
 ## 20. Context hints for proper noun accuracy
