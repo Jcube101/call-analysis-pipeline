@@ -132,6 +132,8 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 - [ ] **Batch mode** — process multiple files from `input/` folder in sequence
 - [ ] **Watch mode** — auto-process new files as they appear in `input/`
 - [ ] **Update CallAnalysisPipelineDetail.tsx** — reflect full built state including FastAPI, ngrok, web UI, and Gemini model selection
+- [ ] **Stream Stage 3 audio slices** — `transcribe.py` still loads the whole clean WAV into memory; next ceiling on recording length (see [KNOWN-ISSUES.md](KNOWN-ISSUES.md))
+- [ ] **Reduce Stage 1 peak memory** — `_from_numpy()` allocates several full-length temporaries (see [KNOWN-ISSUES.md](KNOWN-ISSUES.md))
 
 ---
 

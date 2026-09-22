@@ -558,6 +558,25 @@ async def options_handler(path: str):
     )
 
 
+def _check_ffmpeg() -> None:
+    """Fail fast if ffmpeg is missing.
+
+    Stage 1 shells out to ffmpeg to decode the upload. Without this preflight a
+    missing binary surfaces as a raw subprocess error partway through the job,
+    after the file has been uploaded and the worker thread has started.
+    """
+    if shutil.which("ffmpeg") is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "ffmpeg is not installed or not on the server's PATH. "
+                "Install it and restart the API "
+                "(Windows: https://ffmpeg.org/download.html, "
+                "macOS: brew install ffmpeg, Debian/Ubuntu: sudo apt install ffmpeg)."
+            ),
+        )
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -578,6 +597,11 @@ async def analyse(
     gemini_model: str = Form("claude-haiku-4-5-20251001"),
     context_hints: str = Form(""),
 ):
+    # Preflight before anything is written to disk or queued, so a broken
+    # install fails immediately with a clear 503 instead of mid-job.
+    if not skip_preprocess:
+        _check_ffmpeg()
+
     if gemini_model not in ALLOWED_GEMINI_MODELS:
         gemini_model = "claude-haiku-4-5-20251001"
     if context is not None and context not in ALLOWED_CONTEXTS:

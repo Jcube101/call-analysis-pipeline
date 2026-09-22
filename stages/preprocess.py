@@ -2,8 +2,9 @@
 Stage 1 — Audio Pre-processing
 
 Steps:
-  1. Load the input MP3 (or any format pydub supports via ffmpeg)
-  2. Convert to mono, 16 kHz — the format pyannote and Whisper prefer
+  1. Decode the input (MP3/M4A/WAV or any ffmpeg-supported format) straight to a
+     mono, 16 kHz, 16-bit PCM WAV via a single streaming ffmpeg pass
+  2. Read that WAV with soundfile — already at target rate, so the read is cheap
   3. Apply spectral noise reduction (noisereduce) — chunked for large files
   4. Normalize overall loudness
   5. Export as a clean WAV file for downstream stages
@@ -12,19 +13,59 @@ Steps:
 import gc
 import math
 import os
+import shutil
+import subprocess
 import numpy as np
 import noisereduce as nr
+import soundfile as sf
 from pydub import AudioSegment
 from pydub.effects import normalize
 from tqdm import tqdm
 
+# Mono 16 kHz is what pyannote (Stage 2) and Whisper (Stage 3) both expect.
+TARGET_SAMPLE_RATE = 16_000
+TARGET_CHANNELS = 1
 
-def _to_numpy(audio: AudioSegment) -> tuple[np.ndarray, int]:
-    """Convert a pydub AudioSegment to a float32 numpy array + sample rate."""
-    samples = np.array(audio.get_array_of_samples(), dtype=np.float32)
-    # pydub stores interleaved stereo; we've already converted to mono above
-    samples /= float(2 ** (audio.sample_width * 8 - 1))  # normalise to [-1, 1]
-    return samples, audio.frame_rate
+
+def _decode_to_wav(input_path: str, output_path: str) -> None:
+    """Decode any ffmpeg-supported source to a mono, 16 kHz, 16-bit PCM WAV on disk.
+
+    Runs as a single streaming ffmpeg pass: the audio never exists as a Python
+    object, and the downsample to 16 kHz happens inside ffmpeg rather than after
+    the fact. This replaces AudioSegment.from_file(), which buffered the whole
+    decoded stream in memory and copied it several times before any downsampling
+    could occur - peaking at ~2.7 GB on a 2h43m recording and raising MemoryError
+    on machines without that much headroom.
+    """
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError(
+            "ffmpeg is not installed or not on your PATH.\n"
+            "  macOS:          brew install ffmpeg\n"
+            "  Ubuntu/Debian:  sudo apt install ffmpeg\n"
+            "  Windows:        https://ffmpeg.org/download.html (add to PATH)"
+        )
+
+    command = [
+        "ffmpeg",
+        "-nostdin",             # never block waiting on stdin
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",                   # overwrite a stale temp file from a crashed run
+        "-i", input_path,
+        "-vn",                  # drop cover art / video streams
+        "-ac", str(TARGET_CHANNELS),
+        "-ar", str(TARGET_SAMPLE_RATE),
+        "-acodec", "pcm_s16le",
+        "-f", "wav",
+        output_path,
+    ]
+
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg failed to decode {input_path} "
+            f"(exit code {result.returncode}):\n{result.stderr.strip()}"
+        )
 
 
 def _from_numpy(samples: np.ndarray, sample_rate: int, sample_width: int = 2) -> AudioSegment:
@@ -99,34 +140,44 @@ def run(input_path: str, output_dir: str) -> str:
         Path to the cleaned WAV file.
     """
     print(f"\n[Stage 1] Loading audio: {input_path}")
-    audio = AudioSegment.from_file(input_path)
+    os.makedirs(output_dir, exist_ok=True)
 
-    # Standardise: mono, 16 kHz
-    audio = audio.set_channels(1).set_frame_rate(16_000)
-    print(f"[Stage 1] Duration: {len(audio) / 1000:.1f}s  |  Sample rate: {audio.frame_rate} Hz")
-
-    # --- Noise reduction (chunked for large files) ---
-    print("[Stage 1] Applying noise reduction...")
-    samples, sr = _to_numpy(audio)
-    del audio  # free pydub copy before allocating numpy output
-    gc.collect()
-
-    reduced = _chunked_reduce_noise(samples, sr)
-    del samples
-    gc.collect()
-
-    audio = _from_numpy(reduced, sr)
-    del reduced
-    gc.collect()
-
-    # --- Loudness normalization ---
-    print("[Stage 1] Normalizing loudness...")
-    audio = normalize(audio)
-
-    # --- Export ---
     base_name = os.path.splitext(os.path.basename(input_path))[0]
     output_path = os.path.join(output_dir, f"{base_name}_clean.wav")
-    audio.export(output_path, format="wav")
-    print(f"[Stage 1] Clean audio saved to: {output_path}")
+    # Intermediate decode target. The "_decoded.tmp" suffix keeps it clear of the
+    # "*_clean.wav" glob that api.py uses to serve the download endpoint.
+    decoded_path = os.path.join(output_dir, f"{base_name}_decoded.tmp.wav")
+
+    try:
+        _decode_to_wav(input_path, decoded_path)
+
+        # Safe to read whole: already mono at 16 kHz, so float32 costs ~115 MB
+        # per hour of audio regardless of the source rate or channel count.
+        samples, sr = sf.read(decoded_path, dtype="float32")
+        print(f"[Stage 1] Duration: {len(samples) / sr:.1f}s  |  Sample rate: {sr} Hz")
+
+        # --- Noise reduction (chunked for large files) ---
+        print("[Stage 1] Applying noise reduction...")
+        reduced = _chunked_reduce_noise(samples, sr)
+        del samples
+        gc.collect()
+
+        audio = _from_numpy(reduced, sr)
+        del reduced
+        gc.collect()
+
+        # --- Loudness normalization ---
+        print("[Stage 1] Normalizing loudness...")
+        audio = normalize(audio)
+
+        # --- Export ---
+        audio.export(output_path, format="wav")
+        print(f"[Stage 1] Clean audio saved to: {output_path}")
+    finally:
+        if os.path.exists(decoded_path):
+            try:
+                os.remove(decoded_path)
+            except OSError:
+                pass  # a leftover temp file is harmless; do not mask a real error
 
     return output_path
