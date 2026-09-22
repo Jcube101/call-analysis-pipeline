@@ -4,6 +4,8 @@ A Python pipeline that takes a recorded conversation and produces a clean, speak
 
 **Status: v1.0 — fully functional and tested end-to-end (GPU, Windows 11, GTX 1650). Validated on recordings up to 2h40m. Includes speaker re-identification and speaker name mapping.**
 
+> **Picking this up after a break?** This machine has **no `venv/`** for this project — all dependencies live in the **global Python 3.12** install (`C:\Users\jobjo\AppData\Local\Programs\Python\Python312\python.exe`). There's also a separate **Python 3.11** on PATH (`...\Python311\python.exe`) that is *not* set up for this project — if `python`/`pip` resolve to 3.11 instead of 3.12, you'll hit `ModuleNotFoundError` for everything (`uvicorn`, `dotenv`, `torch`, ...) even though it "should" be installed. Check with `where python` — the 3.12 one needs to come first, or invoke it explicitly (`C:\Users\jobjo\AppData\Local\Programs\Python\Python312\python.exe -m uvicorn api:app --host 0.0.0.0 --port 8010`). If you do see `ModuleNotFoundError`, just re-run the [install steps below](#clone-and-install) against the 3.12 interpreter — order matters (torch first, then pin numpy, then the rest).
+
 ## What it does
 
 | Stage | Description |

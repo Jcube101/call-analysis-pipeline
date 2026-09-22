@@ -19,6 +19,8 @@ v1.0 complete and fully operational. FastAPI wrapper with WebSocket progress, fr
 - WebSocket UI can get stuck on the last known stage after an ngrok reconnect — the pipeline completes correctly and files are saved; use Start Over and re-check the output folder as a workaround.
 - ngrok free tier changes URL on every restart — paste the new URL into the Backend URL field on the site.
 
+**Local environment note (Windows dev machine):** There is no `venv/` for this project — dependencies are installed into the **global Python 3.12** (`C:\Users\jobjo\AppData\Local\Programs\Python\Python312\python.exe`). A separate **Python 3.11** also exists on PATH and is not set up for this project. If `python api.py` / `uvicorn api:app` fails with `ModuleNotFoundError` (`uvicorn`, `dotenv`, `torch`, etc.), first check `where python` — 3.11 may be shadowing 3.12. If packages are genuinely missing, reinstall in order: `pip install torch==2.5.1+cu124 torchaudio==2.5.1+cu124 --index-url https://download.pytorch.org/whl/cu124`, then `pip install "numpy<2.0" --force-reinstall`, then `pip install -r requirements.txt`, then `pip install fastapi uvicorn python-multipart` (not in `requirements.txt` by design — see FastAPI wrapper section below).
+
 ## How to run
 
 ```bash
