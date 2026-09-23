@@ -237,6 +237,11 @@ def get_or_recover_job(job_id: str) -> Optional[dict]:
 
     recovered: dict = {
         "status": "complete" if has_output else "unknown",
+        # The request that started this job died with the process, so the only
+        # evidence of whether a report was asked for is whether one was
+        # written. Claiming True when no file exists would make every
+        # report-less run look like a failure after a restart.
+        "generate_report": bool(report_files),
         "output_dir": job_dir,
         "files": files,
         "message_queue": [],
@@ -271,6 +276,41 @@ def get_or_recover_job(job_id: str) -> Optional[dict]:
 
     jobs[job_id] = recovered
     return recovered
+
+
+DOWNLOAD_TYPES = ("transcript", "json", "report", "wav")
+
+
+def _resolve_download_path(job_dir: str, file_type: str) -> Optional[str]:
+    """Path /download would serve for this type, or None if it isn't there yet.
+
+    Single source of truth for both /download and /reconnect's "outputs" map --
+    the map is only worth anything if it agrees exactly with what a subsequent
+    download will actually find.
+    """
+    if file_type in ("txt", "transcript"):
+        candidates = [f for f in _glob.glob(os.path.join(job_dir, "*.txt")) if "_report" not in f]
+    elif file_type == "json":
+        named = _glob.glob(os.path.join(job_dir, "transcript_named.json"))
+        candidates = named or [
+            f for f in _glob.glob(os.path.join(job_dir, "*.json"))
+            if "named" not in os.path.basename(f)
+        ]
+    elif file_type == "report":
+        candidates = _glob.glob(os.path.join(job_dir, "*_report.md"))
+    elif file_type == "wav":
+        candidates = _glob.glob(os.path.join(job_dir, "*_clean.wav"))
+    else:
+        return None
+    return candidates[0] if candidates else None
+
+
+def _available_outputs(job_dir: str) -> dict:
+    """Which downloadable outputs exist on disk right now."""
+    return {
+        kind: _resolve_download_path(job_dir, kind) is not None
+        for kind in DOWNLOAD_TYPES
+    }
 
 
 def _push_ws(job_id: str, payload: dict) -> None:
@@ -776,6 +816,11 @@ async def report_from_json(
     jobs[job_id] = {
         "status": "queued",
         "params": params,
+        # Stated explicitly rather than left absent: generating a report is the
+        # entire purpose of this endpoint, so report=None here always means
+        # something went wrong, never "not asked for". /reconnect reports this
+        # as report_expected.
+        "generate_report": True,
         "gemini_model": gemini_model,
         "context_hints": context_hints.strip(),
         # Always empty: the queue is replayed in full to every client that
@@ -842,9 +887,18 @@ async def reconnect(job_id: str):
     status = job.get("status")
     done = status in ("complete", "error")
 
+    # report=None is otherwise overloaded: it means either "generate_report was
+    # false" or "Stage 5 ran and the file read failed". outputs says what
+    # /download can actually serve right now, so a client holding report=None
+    # can still see the file landed on disk.
+    report_expected = bool(job.get("generate_report", False))
+    outputs = _available_outputs(job.get("output_dir") or f"output/jobs/{job_id}")
+
     return {
         "status": status,
         "done": done,
+        "report_expected": report_expected,
+        "outputs": outputs,
         "current_stage": job.get("current_stage"),
         "stage_name": job.get("stage_name"),
         "progress_message": job.get("progress_message"),
@@ -864,31 +918,17 @@ async def download(job_id: str, file_type: str):
 
     job_dir = f"output/jobs/{job_id}"
 
-    if file_type in ("txt", "transcript"):
-        candidates = [f for f in _glob.glob(os.path.join(job_dir, "*.txt")) if "_report" not in f]
-        file_path = candidates[0] if candidates else None
-        media_type = "text/plain"
-    elif file_type == "json":
-        named = _glob.glob(os.path.join(job_dir, "transcript_named.json"))
-        if named:
-            file_path = named[0]
-        else:
-            candidates = [
-                f for f in _glob.glob(os.path.join(job_dir, "*.json"))
-                if "named" not in os.path.basename(f)
-            ]
-            file_path = candidates[0] if candidates else None
-        media_type = "application/json"
-    elif file_type == "report":
-        candidates = _glob.glob(os.path.join(job_dir, "*_report.md"))
-        file_path = candidates[0] if candidates else None
-        media_type = "text/markdown"
-    elif file_type == "wav":
-        candidates = _glob.glob(os.path.join(job_dir, "*_clean.wav"))
-        file_path = candidates[0] if candidates else None
-        media_type = "audio/wav"
-    else:
+    media_types = {
+        "txt": "text/plain",
+        "transcript": "text/plain",
+        "json": "application/json",
+        "report": "text/markdown",
+        "wav": "audio/wav",
+    }
+    if file_type not in media_types:
         raise HTTPException(status_code=400, detail="Unknown file type. Use: transcript, json, report, wav")
+    media_type = media_types[file_type]
+    file_path = _resolve_download_path(job_dir, file_type)
 
     if not file_path or not os.path.isfile(file_path):
         raise HTTPException(status_code=404, detail="File not ready yet")

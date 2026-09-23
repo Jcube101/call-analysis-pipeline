@@ -641,3 +641,65 @@ def test_reconnect_running_is_not_done_despite_empty_payload():
         status="running", current_stage=5, stage_name="AI Report"))
     assert result["transcript"] is None and result["report"] is None
     assert result["done"] is False
+
+
+def test_reconnect_report_expected_false_when_report_not_requested():
+    """An /analyse job run with generate_report=false: report=None is correct."""
+    result = _reconnect("no-report-job", _job(
+        status="complete", generate_report=False, transcript=[{"text": "hi"}]))
+    assert result["report_expected"] is False
+    assert result["report"] is None
+
+
+def test_reconnect_report_expected_true_for_report_from_json_job():
+    """report-from-json sets generate_report explicitly, so report=None there
+    always means something went wrong rather than 'not asked for'."""
+    result = _reconnect("rfj-job", _job(status="running", generate_report=True))
+    assert result["report_expected"] is True
+
+
+def test_reconnect_outputs_reports_files_on_disk(tmp_path, monkeypatch):
+    """outputs must agree with what /download would actually serve."""
+    job_id = "outputs-job"
+    job_dir = _make_job_dir(str(tmp_path), job_id)
+    open(os.path.join(job_dir, "input_20260401_000000.txt"), "w").write("t")
+    open(os.path.join(job_dir, "input_20260401_000000_report.md"), "w").write("# r")
+    monkeypatch.chdir(tmp_path)
+
+    result = _reconnect(job_id, _job(
+        status="complete", output_dir=os.path.join("output", "jobs", job_id)))
+    assert result["outputs"] == {
+        "transcript": True, "json": False, "report": True, "wav": False
+    }
+
+
+def test_reconnect_outputs_shows_report_despite_null_report_field(tmp_path, monkeypatch):
+    """The case this field exists for: report text uncached but file present."""
+    job_id = "uncached-report-job"
+    job_dir = _make_job_dir(str(tmp_path), job_id)
+    open(os.path.join(job_dir, "input_20260401_000000_report.md"), "w").write("# r")
+    monkeypatch.chdir(tmp_path)
+
+    result = _reconnect(job_id, _job(
+        status="complete", generate_report=True,
+        output_dir=os.path.join("output", "jobs", job_id)))
+    assert result["outputs"]["report"] is True
+
+
+def test_reconnect_outputs_empty_for_job_with_no_files():
+    result = _reconnect("empty-job", _job(status="running"))
+    assert result["outputs"] == {
+        "transcript": False, "json": False, "report": False, "wav": False
+    }
+
+
+def test_available_outputs_agrees_with_download_resolution(tmp_path):
+    """_available_outputs is derived from the same resolver /download uses."""
+    import api as api_mod
+    job_dir = str(tmp_path)
+    open(os.path.join(job_dir, "input_clean.wav"), "wb").write(b"RIFF")
+    avail = api_mod._available_outputs(job_dir)
+    for kind, present in avail.items():
+        resolved = api_mod._resolve_download_path(job_dir, kind)
+        assert present == (resolved is not None), kind
+    assert avail["wav"] is True
