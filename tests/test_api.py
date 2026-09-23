@@ -589,3 +589,55 @@ def test_report_from_json_starts_with_empty_message_queue(tmp_path, monkeypatch)
         assert stale_complete not in jobs[job_id]["message_queue"]
     finally:
         jobs.pop(job_id, None)
+
+
+# ---------------------------------------------------------------------------
+# /reconnect terminal signalling
+# ---------------------------------------------------------------------------
+
+def _reconnect(job_id, job):
+    """Drive the real /reconnect coroutine against an in-memory job."""
+    import asyncio
+    import api as api_mod
+    api_mod.jobs[job_id] = job
+    try:
+        return asyncio.run(api_mod.reconnect(job_id))
+    finally:
+        api_mod.jobs.pop(job_id, None)
+
+
+def _job(**overrides):
+    base = {
+        "status": "queued", "message_queue": [], "current_stage": None,
+        "stage_name": None, "progress_message": None, "transcript": None,
+        "metadata": {}, "report_path": None, "report": None, "error": None,
+        "output_dir": "output/jobs/does-not-exist",
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.parametrize("status,expected", [
+    ("queued", False),
+    ("running", False),
+    ("unknown", False),
+    ("complete", True),
+    ("error", True),
+])
+def test_reconnect_done_flag_matches_status(status, expected):
+    """done is true only for genuinely terminal states."""
+    result = _reconnect("done-flag-job", _job(status=status))
+    assert result["done"] is expected
+    assert result["status"] == status  # existing field untouched
+
+
+def test_reconnect_running_is_not_done_despite_empty_payload():
+    """The incident shape: running mid-Stage-5, nothing to show yet.
+
+    transcript and report are both None here, identical to a failed job, so
+    done is the only field that distinguishes them without reading status.
+    """
+    result = _reconnect("mid-flight-job", _job(
+        status="running", current_stage=5, stage_name="AI Report"))
+    assert result["transcript"] is None and result["report"] is None
+    assert result["done"] is False

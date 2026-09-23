@@ -833,8 +833,18 @@ async def reconnect(job_id: str):
             except Exception:
                 pass
 
+    # One unambiguous terminal flag alongside the status string. Every
+    # non-terminal state returns transcript=None and report=None, which is
+    # byte-identical to a failure, so a client that renders from the payload
+    # rather than branching on status first cannot tell "not finished yet"
+    # from "finished, produced nothing". "unknown" is deliberately not done:
+    # a recovered folder with no outputs is not a job we can vouch for.
+    status = job.get("status")
+    done = status in ("complete", "error")
+
     return {
-        "status": job.get("status"),
+        "status": status,
+        "done": done,
         "current_stage": job.get("current_stage"),
         "stage_name": job.get("stage_name"),
         "progress_message": job.get("progress_message"),
