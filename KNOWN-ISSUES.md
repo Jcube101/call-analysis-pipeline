@@ -9,16 +9,37 @@ For solved problems and the reasoning behind existing design choices, see
 
 ---
 
-## 1. Stage 2 cannot diarize multi-hour recordings on this machine
+## 1. Stage 2 runs out of host RAM in pyannote's `get_embeddings`
 
-**Status:** open — untouched. The only open issue left, and the one that stops a
-2h43m recording. Stages 1 and 3 both clear it.
+**Status:** open — untouched, tracked separately. The only open issue left, and
+the one that stops a 2h43m recording. Stages 1 and 3 both clear it.
 
-**It presents as a GPU error but the evidence says host RAM.** Read the next
-section before trying a CUDA fix, because the obvious one is unlikely to help.
+**Diagnosis: host RAM exhaustion, not CUDA.** Confirmed on an unconstrained run
+(no memory balloon, GPU otherwise idle at 347 MiB of 4096 MiB used). Stage 1
+completed, Stage 2 got through segmentation, and then a plain host allocation of
+640 KB failed:
 
-**Symptoms.** Two different failures, both inside Stage 2, depending on how much
-host memory is free:
+```
+File "pyannote/audio/pipelines/speaker_diarization.py", line 339, in get_embeddings
+RuntimeError: [enforce fail at alloc_cpu.cpp:114] DefaultCPUAllocator:
+  not enough memory: you tried to allocate 640000 bytes.
+```
+
+This box has 7.42 GB of RAM with roughly 1.0-1.5 GB genuinely free at rest, and
+pyannote needs the whole waveform resident plus its own embedding buffers. The
+`float32` fix (see Resolved) took Stage 2's own buffers from ~2.5 GB to ~1.2 GB
+and moved the failure point noticeably later — from `sf.read` at the very start
+through to `get_embeddings` near the end — but did not clear it.
+
+**Worth trying, in order:** run Stage 2 on CPU for long files; chunk the
+waveform through pyannote; or free host RAM before the run. Note that the
+waveform is passed in memory *on purpose*, to avoid a `torchcodec` dependency
+(CLAUDE.md, "Audio input to pyannote"), so a file-path-based fix trades one
+problem for another.
+
+### Do not be misled by CUDA OOM errors here
+
+The same failure sometimes surfaces as a CUDA error instead:
 
 ```
 torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 158.00 MiB.
@@ -27,45 +48,46 @@ Of the allocated memory 215.13 MiB is allocated by PyTorch, and 12.87 MiB
 is reserved by PyTorch but unallocated.
 ```
 
-```
-File "pyannote/audio/pipelines/speaker_diarization.py", line 339, in get_embeddings
-RuntimeError: [enforce fail at alloc_cpu.cpp:114] DefaultCPUAllocator:
-  not enough memory: you tried to allocate 640000 bytes.
-```
-
-The second is plainly host RAM — a 640 KB CPU allocation failing. The first
-looks like VRAM but is not: **158 MiB requested, 2.98 GiB free, 215 MiB
-allocated.** No VRAM capacity limit and no fragmentation pattern produces those
-numbers.
-
-**Measured directly.** Allocating 128 MiB CUDA blocks in a loop until failure:
+**That is not a VRAM capacity or fragmentation problem** — 158 MiB requested
+against 2.98 GiB free with only 215 MiB allocated. On Windows WDDM a CUDA
+allocation must be backed by host memory, so host RAM pressure makes the driver
+fail and PyTorch reports it as a CUDA OOM. Measured directly by allocating
+128 MiB CUDA blocks in a loop until failure:
 
 | Host condition | Allocated on GPU before failure | GPU still free | Result |
 |---|---|---|---|
 | no pressure (`AvailPhys` 1.02 GB) | **3.75 GiB** | 0 MiB | no error — hit the test's own cap |
 | under a balloon (`AvailPhys` 0.22 GB) | 1.75 GiB | **1.47 GiB** | `CUDA out of memory` |
 
-On Windows WDDM a CUDA allocation must be backed by host memory, so host RAM
-pressure surfaces as a spurious "CUDA out of memory" with gigabytes of VRAM
-free. Every Stage 2 OOM observed so far happened while `AvailPhys` was
-0.22-1.2 GB. This is the same family as the `WinError 1455` note in CLAUDE.md.
+Every Stage 2 OOM observed so far happened while `AvailPhys` was 0.22-1.2 GB.
+Same family as the `WinError 1455` note in CLAUDE.md.
 
-**`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is worth one try but is not
-expected to help** — it addresses fragmentation of reserved-but-unallocated
-blocks, and at 215 MiB allocated there is nothing to defragment. Untested.
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is **unlikely to help but
+low-cost to try** — it addresses fragmentation of reserved-but-unallocated
+blocks, and at 215 MiB allocated there is nothing to defragment. Untested. Do
+not treat it as the leading candidate; the host-RAM work above is.
 
-**The real constraint** is that this box has 7.42 GB of RAM with roughly
-1.0-1.5 GB genuinely free at rest, and pyannote needs the whole waveform
-resident plus its own embedding buffers. The `float32` fix (see Resolved) took
-Stage 2's own buffers from ~2.5 GB to ~1.2 GB and moved the failure point
-noticeably later — from `sf.read` at the very start, through to
-`get_embeddings` near the end — but did not clear it.
+---
 
-**Worth trying, in order:** run Stage 2 on CPU for long files; chunk the
-waveform through pyannote; or free host RAM before the run. Note that the
-waveform is passed in memory *on purpose*, to avoid a `torchcodec` dependency
-(CLAUDE.md, "Audio input to pyannote"), so a file-path-based fix trades one
-problem for another.
+## Tooling caveat — `squeeze.py` cannot pressure-test GPU stages
+
+The memory balloon used for the Stage 1 measurements allocates and touches
+128 MB blocks until `GlobalMemoryStatusEx().ullAvailPageFile` reaches a target,
+then runs the pipeline as a subprocess under it.
+
+**It constrains `AvailPageFile`, not `AvailPhys`.** Squeezing to 3.0 GB
+AvailPageFile leaves only ~0.22 GB of AvailPhys on this machine. That is a valid
+— indeed harsh — test for CPU-only work like Stage 1, which is why the Stage 1
+numbers below are trustworthy.
+
+**It is not valid for Stage 2 or Stage 3.** At that little physical RAM the CUDA
+driver cannot get the host memory it needs to back device allocations, so GPU
+stages fail on driver backing rather than on anything the pipeline controls.
+A "Stage 2 fails at 3.0 GB" result from this tool says nothing about Stage 2.
+
+Do not re-run that test expecting a meaningful answer. To pressure-test a GPU
+stage, constrain `ullAvailPhys` directly and keep enough physical headroom for
+the driver, or test on a machine with more RAM.
 
 ---
 
@@ -205,11 +227,7 @@ matches `pydub.effects.normalize`'s 0.1 dB headroom default exactly.
 `GlobalMemoryStatusEx().ullAvailPageFile` reaches the target, then run the
 pipeline as a subprocess under that balloon.
 
-Two caveats when reading the numbers above. The balloon touches every page to
-force residency, so it is harsher than natural memory contention. And the
-target is **AvailPageFile**, not physical RAM: squeezing to 3.0 GB AvailPageFile
-leaves only ~0.22 GB of AvailPhys on this machine. That is fine for the CPU-only
-work in Stage 1, but it starves the CUDA driver of the host memory it needs to
-back device allocations, so **GPU stages cannot be meaningfully tested under the
-balloon at all** — they fail on host backing rather than on anything the
-pipeline controls.
+The balloon touches every page to force residency, so it is harsher than natural
+memory contention — which is what makes these Stage 1 numbers meaningful. See
+"Tooling caveat" above before using the same approach on Stage 2 or Stage 3: it
+does not work for GPU stages.
