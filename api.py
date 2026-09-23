@@ -472,6 +472,7 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
     job = jobs[job_id]
     job["status"] = "running"
     output_dir = f"output/jobs/{job_id}"
+    started_at = time.time()
 
     try:
         with open(json_path, "r", encoding="utf-8") as f:
@@ -559,6 +560,19 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
         job["status"] = "complete"
         job["files"] = files
         _push_complete(job_id)
+
+        # Same terminal completion signal as _run_pipeline. This path runs
+        # Stage 5 only, so the segment count comes from the uploaded JSON and
+        # the only outputs are that JSON (relabelled, if speaker names were
+        # given) and the report — there is no clean WAV or .txt transcript.
+        print(
+            f"\n[job {job_id}] Report complete in {_fmt_duration(time.time() - started_at)} "
+            f"— {len(transcribed_segments)} segment(s) from transcript"
+        )
+        for kind in ("json", "report"):
+            path = files.get(kind)
+            if path:
+                print(f"[job {job_id}]   {kind}: {path}")
 
     except BaseException as exc:
         job["status"] = "error"
