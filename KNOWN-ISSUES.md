@@ -1,6 +1,7 @@
 # Known Issues — Call Analysis Pipeline
 
-Open problems that are understood but deliberately not fixed yet. Each entry
+Open problems that are understood but deliberately not fixed yet, plus fixed
+ones whose original diagnosis was wrong and is worth not repeating. Each entry
 records the root cause and the measurement behind it so a future session does
 not have to re-diagnose from scratch.
 
@@ -9,33 +10,117 @@ For solved problems and the reasoning behind existing design choices, see
 
 ---
 
-## 1. Stage 2 runs out of host RAM in pyannote's `get_embeddings`
+## 1. Stage 2 ran out of host RAM on long recordings — FIXED
 
-**Status:** open — untouched, tracked separately. The only open issue left, and
-the one that stops a 2h43m recording. Stages 1 and 3 both clear it.
+**Status:** fixed. The 2h43m reference recording now completes reliably. Kept
+here rather than moved to Resolved because the diagnosis below was wrong for a
+long time and the correction is the useful part.
 
-**Diagnosis: host RAM exhaustion, not CUDA.** Confirmed on an unconstrained run
-(no memory balloon, GPU otherwise idle at 347 MiB of 4096 MiB used). Stage 1
-completed, Stage 2 got through segmentation, and then a plain host allocation of
-640 KB failed:
+### The real cause: an O(N²) clustering matrix, not the waveform
 
-```
-File "pyannote/audio/pipelines/speaker_diarization.py", line 339, in get_embeddings
-RuntimeError: [enforce fail at alloc_cpu.cpp:114] DefaultCPUAllocator:
-  not enough memory: you tried to allocate 640000 bytes.
-```
+Stage 2 hands its speaker embeddings to `scipy.cluster.hierarchy.linkage`, which
+builds a **full condensed pairwise distance matrix**. That is quadratic in the
+number of embeddings, and the number of embeddings is linear in recording length
+(one 10 s window per second, up to 3 speakers each).
 
-This box has 7.42 GB of RAM with roughly 1.0-1.5 GB genuinely free at rest, and
-pyannote needs the whole waveform resident plus its own embedding buffers. The
-`float32` fix (see Resolved) took Stage 2's own buffers from ~2.5 GB to ~1.2 GB
-and moved the failure point noticeably later — from `sf.read` at the very start
-through to `get_embeddings` near the end — but did not clear it.
+Measured on the 2h43m file: **16,760 embeddings** reach `linkage` (of a 29,241
+upper bound; `filter_embeddings` keeps ~57%), at dimension 256 — a **1.05 GB**
+condensed matrix, and roughly **2.1 GB** once centroid linkage takes its working
+copy. Isolated per-method runs at N=8000, predicted condensed size 244 MB:
 
-**Worth trying, in order:** run Stage 2 on CPU for long files; chunk the
-waveform through pyannote; or free host RAM before the run. Note that the
-waveform is passed in memory *on purpose*, to avoid a `torchcodec` dependency
-(CLAUDE.md, "Audio input to pyannote"), so a file-path-based fix trades one
-problem for another.
+| method | peak delta |
+|---|---|
+| centroid (what 3.1 uses) | 478 MB |
+| average | 478 MB |
+| ward | 478 MB |
+| single | 263 MB |
+
+Scaling, upper bound on embeddings:
+
+| audio | embeddings | condensed matrix |
+|---|---|---|
+| 8 min | 1,413 | 0.01 GB |
+| 60 min | 10,773 | 0.43 GB |
+| 120 min | 21,573 | 1.73 GB |
+| 162 min | 29,241 | 3.19 GB |
+| 240 min | 43,173 | 6.94 GB |
+
+**The earlier diagnosis pointed at the wrong line.** The failure was recorded at
+`get_embeddings`, and the waveform was assumed to be the load. Re-running under
+pressure put it in `clustering.py:365` → `hierarchy.py:1064` every time, three
+times out of three. The 640 KB allocation quoted in the old write-up was the
+straw, not the weight — by then the process was already at its ceiling.
+
+### The fix: pyannote's own cap, which the 3.1 config disables
+
+`BaseClustering.__init__` defaults `max_num_embeddings=1000` and subsamples in
+`filter_embeddings()`, clustering that subset and labelling everything else
+through `assign_embeddings()`. The pretrained `speaker-diarization-3.1` pipeline
+instantiates with **`max_num_embeddings = inf`**, so the cap never fires.
+
+`stages/diarize.py` now sets it to 1000. Measured on the 2h43m file with
+`num_speakers=2`:
+
+| cap | segments | speaker split | peak |
+|---|---|---|---|
+| `inf` | 3527 | **1278 s / 6213 s** | 7656 MB |
+| 5000 | 3389 | 3630 s / 3861 s | 5689 MB |
+| 1000 | 3386 | 3626 s / 3864 s | 5671 MB |
+
+This buys output quality as well as memory: uncapped splits a two-person
+conversation 17/83, which is the label-collapse failure. Caps of 1000 and 5000
+agree on **99.96%** of frames (best label permutation, 0.1 s resolution), so the
+smaller one costs nothing. In auto-detect mode (no `num_speakers`) uncapped found
+**11 speakers** on the same two-person recording; capped found 3.
+
+### Second fix: stop holding the audio in memory
+
+pyannote now receives a **file path**, and the MFCC re-identification pass reads
+each segment from the clean WAV instead of copying a resident waveform. Together
+these removed ~900 MB on the 2h43m file. See CLAUDE.md, "Audio input to
+pyannote" — the `torchcodec` rationale for the in-memory dict was mistaken.
+
+### Result
+
+Three runs before the audio change and three after, `num_speakers=2`:
+
+| | peak | outcome |
+|---|---|---|
+| before any fix | — | MemoryError in `linkage`, 3 of 3 |
+| clustering cap only | 6597 MB | completes, 3 of 3 |
+| cap + path + no MFCC copy | **5670 MB** | completes, 3 of 3 |
+
+One of those runs started at 0.81 GB `AvailPhys`, inside the range where it
+previously failed. Output is equivalent, not merely similar: frame agreement
+across the audio change is 99.88-99.94%, against 99.92-99.97% between repeat runs
+of the *same* build — the residual is pyannote's own run-to-run nondeterminism.
+
+### Remaining safety net: the memory preflight
+
+`_check_memory_headroom()` runs before Stage 2 and fails immediately with a clear
+message rather than letting a shortfall surface ten minutes into a run.
+
+Two things about it are easy to get wrong, and both were, before measurement:
+
+- **It checks `ullAvailPageFile`, not `ullAvailPhys`.** A `MemoryError` on
+  Windows is a failed *commit*. This box routinely sits at ~1 GB `AvailPhys` with
+  ~8 GB of commit headroom, and the three runs that succeeded started at 0.81,
+  1.24 and 1.40 GB `AvailPhys`. Gating on `AvailPhys` rejects runs that work.
+- **It subtracts what the process has already committed.** The budget is a peak
+  *total*; by the time Stage 2 starts, torch, the CUDA context and Stage 1's
+  leftovers are already committed. Comparing the whole peak against headroom
+  rejected the 2h43m file that completes 3 out of 3.
+
+Budget is fitted from two measured peaks — 5404 MB at 2 minutes, 5670 MB at
+2h43m — giving **5400 MB + 100 MB per hour**, which predicts both within 1 MB.
+Before the audio change the same fit gave 5396 MB + 443 MB/hour; recalibrate
+these constants if Stage 2's memory profile changes again.
+
+### Still true, and still not fixed
+
+Stage 2 is **not streaming**. `Inference.__call__` loads the whole signal once for
+the segmentation pass regardless of input form; only the embedding crops avoid
+residency. The ceiling is higher, not removed.
 
 ### Do not be misled by CUDA OOM errors here
 
@@ -93,6 +178,17 @@ the driver, or test on a machine with more RAM.
 
 ## Resolved
 
+> **What the Stage 1 and Stage 3 entries below actually bought — corrected.**
+> Each of them is accurate about its own stage, and each was worth doing: Stage 1
+> genuinely could not process long files before, and Stage 3's `_WavReader`
+> genuinely decides the run at 3.0 GB. But they were also read at the time as
+> progress *towards* fixing Stage 2, on the assumption that audio residency was
+> the thing starving it. It was not. Stage 2's ceiling was an O(N²) clustering
+> matrix (see issue 1), which no amount of audio streaming would have touched —
+> the float64 fix below moved the failure point later and was credited with more
+> than it delivered. Treat "peak memory is now flat with respect to recording
+> length" as a per-stage claim, never a whole-pipeline one.
+
 ### Stage 2 read the clean WAV as float64 (fixed)
 
 [`stages/diarize.py`](stages/diarize.py) called `sf.read(clean_wav_path)` and
@@ -117,11 +213,14 @@ On the 2h43m file this moved Stage 2's failure point from `sf.read` at the very
 start through to `get_embeddings` near the end — a real improvement, though not
 enough to complete on a 7.42 GB machine (see open issue 1).
 
-**Not fully streamable**, so this is a shrink rather than an elimination: the
-waveform is handed to pyannote as an in-memory
-`{"waveform": ..., "sample_rate": ...}` dict *on purpose*, to avoid a
-`torchcodec` dependency (see CLAUDE.md, "Audio input to pyannote"). pyannote
-needs the whole signal, and so does the MFCC re-identification pass.
+**Superseded.** This entry used to close by saying the waveform is handed to
+pyannote in memory *on purpose*, to avoid a `torchcodec` dependency. Both halves
+of that turned out to be wrong: pyannote 3.4.0 reads through torchaudio's
+soundfile backend and never needed torchcodec, and the code now passes a file
+path, with the MFCC pass reading segments from disk. The `float32` change below
+still stands on its own — it is a smaller, bit-identical array either way — but
+it did **not** move Stage 2's failure point for the reason claimed here. The
+binding constraint was the clustering matrix (issue 1), which this never touched.
 
 ### `pydub` removed from the dependency list (fixed)
 
