@@ -54,7 +54,7 @@ from typing import Optional
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
@@ -149,6 +149,10 @@ class CORSFallbackMiddleware(BaseHTTPMiddleware):
         response.headers["Access-Control-Allow-Origin"] = "*"
         response.headers["Access-Control-Allow-Methods"] = "*"
         response.headers["Access-Control-Allow-Headers"] = "*"
+        # Without this a cross-origin client cannot read Retry-After off a 202
+        # from /reconnect; CORSMiddleware already sets it, but this fallback
+        # exists precisely for proxies that drop what that middleware wrote.
+        response.headers["Access-Control-Expose-Headers"] = "*"
         return response
 
 
@@ -894,7 +898,7 @@ async def reconnect(job_id: str):
     report_expected = bool(job.get("generate_report", False))
     outputs = _available_outputs(job.get("output_dir") or f"output/jobs/{job_id}")
 
-    return {
+    body = {
         "status": status,
         "done": done,
         "report_expected": report_expected,
@@ -908,6 +912,16 @@ async def reconnect(job_id: str):
         "metadata": job.get("metadata", {}),
         "error": job.get("error"),
     }
+
+    # 202 for a job still in flight, 200 once it is terminal, so the fact that
+    # there is nothing to show yet is carried at the HTTP layer too and not
+    # only in the body. NOTE: 202 is still a success code -- fetch's res.ok is
+    # true for the whole 200-299 range -- so this cannot by itself stop a
+    # client from treating a mid-flight snapshot as final. It is a third
+    # independent signal next to status and done, not a guard.
+    if done:
+        return JSONResponse(body)
+    return JSONResponse(body, status_code=202, headers={"Retry-After": "2"})
 
 
 @app.get("/download/{job_id}/{file_type}")

@@ -595,8 +595,8 @@ def test_report_from_json_starts_with_empty_message_queue(tmp_path, monkeypatch)
 # /reconnect terminal signalling
 # ---------------------------------------------------------------------------
 
-def _reconnect(job_id, job):
-    """Drive the real /reconnect coroutine against an in-memory job."""
+def _reconnect_raw(job_id, job):
+    """Drive the real /reconnect coroutine and return the JSONResponse."""
     import asyncio
     import api as api_mod
     api_mod.jobs[job_id] = job
@@ -604,6 +604,11 @@ def _reconnect(job_id, job):
         return asyncio.run(api_mod.reconnect(job_id))
     finally:
         api_mod.jobs.pop(job_id, None)
+
+
+def _reconnect(job_id, job):
+    """The decoded /reconnect body, for tests that only care about the payload."""
+    return json.loads(_reconnect_raw(job_id, job).body)
 
 
 def _job(**overrides):
@@ -703,3 +708,39 @@ def test_available_outputs_agrees_with_download_resolution(tmp_path):
         resolved = api_mod._resolve_download_path(job_dir, kind)
         assert present == (resolved is not None), kind
     assert avail["wav"] is True
+
+
+def test_reconnect_returns_202_and_retry_after_while_running():
+    """An in-flight job is flagged at the HTTP layer as well as in the body."""
+    response = _reconnect_raw("inflight-job", _job(status="running", current_stage=3))
+    assert response.status_code == 202
+    assert response.headers["retry-after"] == "2"
+
+
+def test_reconnect_returns_202_for_queued_and_unknown():
+    for status in ("queued", "unknown"):
+        assert _reconnect_raw("pending-job", _job(status=status)).status_code == 202
+
+
+def test_reconnect_returns_200_when_terminal():
+    for status in ("complete", "error"):
+        response = _reconnect_raw("terminal-job", _job(status=status))
+        assert response.status_code == 200
+        assert "retry-after" not in response.headers
+
+
+def test_reconnect_202_is_still_a_success_code():
+    """Documents the limit of the 202: fetch treats 200-299 as ok, so a client
+    checking only res.ok sees no difference. status and done are the signals
+    that actually distinguish in-flight from finished."""
+    response = _reconnect_raw("inflight-job", _job(status="running"))
+    assert 200 <= response.status_code < 300
+    body = json.loads(response.body)
+    assert body["done"] is False and body["status"] == "running"
+
+
+def test_reconnect_body_unchanged_between_202_and_200():
+    """The status code is additive -- it carries no information the body lacks."""
+    running = json.loads(_reconnect_raw("b-job", _job(status="running")).body)
+    complete = json.loads(_reconnect_raw("b-job", _job(status="complete")).body)
+    assert running.keys() == complete.keys()
