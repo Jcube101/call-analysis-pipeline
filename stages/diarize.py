@@ -24,6 +24,10 @@ with warnings.catch_warnings():
 
 from config import settings
 
+# Upper bound on embeddings handed to agglomerative clustering. See the comment
+# at the assignment in run() for why this is set and why 1000.
+MAX_CLUSTERING_EMBEDDINGS = 1000
+
 
 # Map raw pyannote labels → human-friendly labels used in the transcript
 def _label_map(raw_labels: list[str]) -> dict[str, str]:
@@ -177,6 +181,25 @@ def run(
     import huggingface_hub
     huggingface_hub.login(token=settings.huggingface_token)
     pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
+
+    # Cap the embeddings fed to agglomerative clustering.
+    #
+    # pyannote's BaseClustering defaults this to 1000 and subsamples to it in
+    # filter_embeddings(), clustering that subset and labelling the rest via
+    # assign_embeddings(). The pretrained speaker-diarization-3.1 config ships
+    # max_num_embeddings=inf, which disables the cap, so scipy's linkage()
+    # receives every embedding and allocates an O(N^2) condensed distance
+    # matrix -- 16760 embeddings on a 2h43m file, 1.05 GB, roughly 2.1 GB with
+    # the working copy centroid linkage needs. That allocation, not the
+    # waveform, is what exhausted host RAM on long recordings.
+    #
+    # 1000 is pyannote's own default. Measured on the 2h43m reference file with
+    # num_speakers=2: peak 7656 -> 5671 MB, and the output is better, not just
+    # cheaper -- uncapped split the two speakers 1278s/6213s, capped gives
+    # 3626s/3864s. Caps of 1000 and 5000 agree on 99.96% of frames, so the
+    # smaller one costs nothing.
+    if hasattr(pipeline, "clustering") and hasattr(pipeline.clustering, "max_num_embeddings"):
+        pipeline.clustering.max_num_embeddings = MAX_CLUSTERING_EMBEDDINGS
 
     # Move to GPU if available
     try:
