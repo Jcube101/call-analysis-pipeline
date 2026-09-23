@@ -290,6 +290,17 @@ def _push_error(job_id: str, message: str) -> None:
     _push_ws(job_id, {"type": "error", "message": message})
 
 
+def _fmt_duration(seconds: float) -> str:
+    """Format seconds as m:ss or h:mm:ss. Mirrors main.py's helper."""
+    seconds = int(seconds)
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
 # ---------------------------------------------------------------------------
 # Pipeline threads
 # ---------------------------------------------------------------------------
@@ -308,6 +319,7 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
     job = jobs[job_id]
     job["status"] = "running"
     output_dir = f"output/jobs/{job_id}"
+    started_at = time.time()
 
     try:
         _configure_settings(params)
@@ -434,6 +446,19 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
         job["status"] = "complete"
         job["files"] = files
         _push_complete(job_id)
+
+        # Terminal completion signal. Everything else printed during an API run
+        # comes from inside the stage modules, so without this a successful job
+        # goes silent after Stage 4's own output. Every line carries the job id
+        # because this server is long-lived and jobs can interleave in the log.
+        print(
+            f"\n[job {job_id}] Pipeline complete in {_fmt_duration(time.time() - started_at)} "
+            f"— {len(transcribed_segments)} segment(s)"
+        )
+        for kind in ("clean_wav", "transcript", "json", "report"):
+            path = files.get(kind)
+            if path:
+                print(f"[job {job_id}]   {kind}: {path}")
 
     except BaseException as exc:
         job["status"] = "error"
