@@ -28,10 +28,15 @@ from config import settings
 # at the assignment in run() for why this is set and why 1000.
 MAX_CLUSTERING_EMBEDDINGS = 1000
 
-# Stage 2's peak commit, measured on the 2h43m reference file with the
-# clustering cap in place: 6597 MB, of which roughly 1.25 GB scales with
-# recording length (the waveform pyannote holds, plus the copy the MFCC pass
-# makes). The rest is torch, the CUDA context and the pyannote models.
+# Stage 2's peak commit, fitted from two measured points -- the 2 minute file
+# (5404 MB) and the 2h43m file (5670 MB), both with the clustering cap and with
+# audio read from disk rather than held resident.
+#
+# The same fit before the disk-reading change gave 5396 MB + 443 MB/hour, which
+# is why these numbers are recalibrated rather than inherited: removing the
+# resident waveform and the MFCC pass's copy took the duration-dependent term
+# from ~443 to ~99 MB/hour. Peak is dominated by the embedding model and the
+# CUDA context, which do not scale with recording length at all.
 #
 # The check below uses ullAvailPageFile, not ullAvailPhys. A MemoryError on
 # Windows is a failed *commit*, and the two are far apart here -- this machine
@@ -39,7 +44,7 @@ MAX_CLUSTERING_EMBEDDINGS = 1000
 # three verification runs of the 2h43m file started at 0.81, 1.24 and 1.40 GB
 # AvailPhys and all completed. Gating on AvailPhys would reject runs that work.
 _STAGE2_BASE_MB = 5400
-_STAGE2_PER_HOUR_MB = 460
+_STAGE2_PER_HOUR_MB = 100
 
 
 def _available_commit_mb() -> Optional[float]:
