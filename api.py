@@ -226,8 +226,17 @@ def get_or_recover_job(job_id: str) -> Optional[dict]:
     if report_files:
         files["report"] = report_files[0]
 
+    # Only claim the job finished if the folder actually holds a pipeline
+    # output. The folder is created when the upload lands, so a server that
+    # restarted mid-run leaves one holding nothing but input.<ext> — reporting
+    # that as "complete" made the API assert a terminal state with no output,
+    # which is exactly the shape a client reads as "the job produced nothing".
+    # The JSON is what hydrates the transcript below; a report alone is enough
+    # for a /report-from-json job that wrote no transcript of its own.
+    has_output = bool(json_files or report_files)
+
     recovered: dict = {
-        "status": "complete",
+        "status": "complete" if has_output else "unknown",
         "output_dir": job_dir,
         "files": files,
         "message_queue": [],

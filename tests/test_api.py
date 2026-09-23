@@ -136,6 +136,37 @@ def test_get_or_recover_job_sets_status_complete_on_recovery(tmp_path, monkeypat
     assert result["status"] == "complete"
 
 
+def test_recovery_does_not_claim_complete_without_outputs(tmp_path, monkeypatch):
+    """A job folder holding only the upload is not 'complete'.
+
+    The folder is created when the upload lands, so a server restart mid-run
+    leaves one with nothing but input.<ext>. Reporting that as complete made
+    /reconnect assert a terminal state with transcript=None and report=None.
+    """
+    job_id = "half-done-job"
+    job_dir = _make_job_dir(str(tmp_path), job_id)
+    open(os.path.join(job_dir, "input.m4a"), "wb").write(b"audio")
+
+    monkeypatch.chdir(tmp_path)
+    jobs.pop(job_id, None)
+
+    result = get_or_recover_job(job_id)
+    assert result["status"] != "complete"
+    assert result["status"] == "unknown"
+
+
+def test_recovery_claims_complete_from_report_alone(tmp_path, monkeypatch):
+    """A report-from-json folder with only a report still counts as complete."""
+    job_id = "report-only-job"
+    job_dir = _make_job_dir(str(tmp_path), job_id)
+    open(os.path.join(job_dir, "input_20260401_000000_report.md"), "w").write("# r")
+
+    monkeypatch.chdir(tmp_path)
+    jobs.pop(job_id, None)
+
+    assert get_or_recover_job(job_id)["status"] == "complete"
+
+
 def test_get_or_recover_job_reads_report_content_on_recovery(tmp_path, monkeypatch):
     """Recovered job has report content read from disk."""
     job_id = "recovery-report-job"
