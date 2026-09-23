@@ -252,7 +252,7 @@ You may see this on startup:
 UserWarning: torchcodec is not installed correctly so built-in audio decoding will fail.
 ```
 
-**Harmless.** The pipeline passes audio to pyannote as a pre-loaded in-memory waveform, so `torchcodec` is never used. The warning is suppressed in the code.
+**Harmless.** pyannote 3.4.0 reads audio through `torchaudio`, which uses the `soundfile` backend here, so `torchcodec` is never needed — the warning is emitted on import regardless and is suppressed in the code.
 
 ## Running the API server
 

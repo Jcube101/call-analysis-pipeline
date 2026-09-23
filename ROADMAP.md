@@ -23,7 +23,7 @@ The core pipeline is functional end-to-end and has been validated on a real M4A 
 - [x] **Stage 4** — Structured export (`.txt` + `.json` with metadata header)
 - [x] `main.py` — CLI entry point with `ffmpeg` preflight check
 - [x] **First real-world test run** — validated on `First_Test_File.m4a` (121 s, 2 speakers, CPU)
-- [x] **pyannote 3.x API compatibility** — `DiarizeOutput` unwrapping + in-memory waveform passthrough
+- [x] **pyannote 3.x API compatibility** — `DiarizeOutput` unwrapping (audio is passed as a file path; see CLAUDE.md)
 - [x] **torchcodec warning suppression** — harmless warning filtered at import; root cause documented
 
 ---

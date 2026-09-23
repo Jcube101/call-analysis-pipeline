@@ -168,7 +168,7 @@ def _label_map(raw_labels: list[str]) -> dict[str, str]:
 
 def _reidentify_speakers(
     segments: list[dict],
-    waveform: "torch.Tensor",
+    clean_wav_path: str,
     sample_rate: int,
     num_speakers: int,
 ) -> list[dict]:
@@ -203,13 +203,17 @@ def _reidentify_speakers(
         print("[Stage 2] scikit-learn not installed — skipping speaker re-identification")
         return segments
 
+    import soundfile as sf
+
     MIN_SEG_SECONDS = 0.5
     N_MFCC = 20
 
-    # Convert waveform to a mono float32 numpy array for librosa.
-    # waveform shape is (channels, samples); take channel 0.
-    audio_np = waveform[0].numpy().astype(np.float32)
-
+    # Each segment is read from disk on demand rather than sliced out of a
+    # resident copy of the whole recording. This used to be
+    # `waveform[0].numpy().astype(np.float32)`, which copied unconditionally
+    # even though the array was already float32 -- 624 MB on the 2h43m file, on
+    # top of the 624 MB waveform it copied from. Same approach as Stage 3's
+    # _WavReader; see stages/transcribe.py.
     embeddings: list[np.ndarray] = []
     long_indices: list[int] = []
     n_short = 0
@@ -218,26 +222,35 @@ def _reidentify_speakers(
 
     print(f"[Stage 2] Extracting MFCC features ({len(segments)} segments, ≥{MIN_SEG_SECONDS}s only)...")
 
-    for i, seg in enumerate(tqdm(segments, desc="  Features", unit="seg")):
-        duration = seg["end"] - seg["start"]
-        if duration < MIN_SEG_SECONDS:
-            n_short += 1
-            continue
+    with sf.SoundFile(clean_wav_path, mode="r") as handle:
+        total_frames = handle.frames
+        for i, seg in enumerate(tqdm(segments, desc="  Features", unit="seg")):
+            duration = seg["end"] - seg["start"]
+            if duration < MIN_SEG_SECONDS:
+                n_short += 1
+                continue
 
-        start_sample = int(seg["start"] * sample_rate)
-        end_sample = int(seg["end"] * sample_rate)
-        seg_audio = audio_np[start_sample:end_sample]
+            # Same bounds as the old array slice: truncate to whole frames and
+            # clamp to the file, so a segment running past the end reads short
+            # exactly as numpy slicing did rather than raising.
+            start_sample = min(int(seg["start"] * sample_rate), total_frames)
+            end_sample = min(int(seg["end"] * sample_rate), total_frames)
+            n_frames = max(0, end_sample - start_sample)
 
-        try:
-            mfcc = librosa.feature.mfcc(y=seg_audio, sr=sample_rate, n_mfcc=N_MFCC)
-            feat = np.mean(mfcc, axis=1)
-            embeddings.append(feat)
-            long_indices.append(i)
-        except Exception as exc:
-            n_failed += 1
-            if not first_error:
-                first_error = str(exc)
-            continue
+            try:
+                handle.seek(start_sample)
+                seg_audio = handle.read(n_frames, dtype="float32")
+                if seg_audio.ndim > 1:
+                    seg_audio = seg_audio.mean(axis=1)
+                mfcc = librosa.feature.mfcc(y=seg_audio, sr=sample_rate, n_mfcc=N_MFCC)
+                feat = np.mean(mfcc, axis=1)
+                embeddings.append(feat)
+                long_indices.append(i)
+            except Exception as exc:
+                n_failed += 1
+                if not first_error:
+                    first_error = str(exc)
+                continue
 
     if n_failed > 0:
         print(f"[Stage 2] {n_failed} segment(s) failed feature extraction (first error: {first_error})")
@@ -351,23 +364,28 @@ def run(
         print("[Stage 2] Speaker count: auto-detect")
 
     import soundfile as sf
-    import numpy as np
-    import torch
 
-    # dtype="float32" rather than sf.read's float64 default: the clean WAV is
-    # 16-bit, so every sample is int16/2**15 and exactly representable in
-    # float32 — the values are identical either way. Reading float64 cost twice
-    # the memory (1.16 GiB vs 595 MB on a 2h43m file) and forced
-    # torch.from_numpy(data).float() below to make a second full-length copy
-    # while narrowing.
-    data, sample_rate = sf.read(clean_wav_path, dtype="float32")
-    if data.ndim == 1:
-        data = data[np.newaxis, :]  # add channel dim
-    else:
-        data = data.T  # (samples, channels) -> (channels, samples)
-    waveform = torch.from_numpy(data).float()
-    audio_input = {"waveform": waveform, "sample_rate": sample_rate}
-    diarization = pipeline(audio_input, **diarize_kwargs)
+    sample_rate = sf.info(clean_wav_path).samplerate
+
+    # The file path is handed to pyannote rather than a pre-loaded
+    # {"waveform": ..., "sample_rate": ...} dict.
+    #
+    # The dict form was chosen to avoid a torchcodec dependency, and that
+    # rationale no longer holds: pyannote 3.4.0 reads audio through torchaudio,
+    # which selects the soundfile backend here (torchaudio.list_audio_backends()
+    # returns ['soundfile'] and torchcodec is not installed). Passing a path
+    # lets Audio.crop() seek-and-read each window it needs instead of slicing a
+    # resident copy of the whole recording -- 300 ten-second crops from the
+    # 2h43m file cost +5 MB this way against +597 MB for the dict.
+    #
+    # Output is unchanged: the full pipeline produced byte-identical segments
+    # both ways on the 2 minute reference file (37 segments, boundaries equal to
+    # 4 decimal places) and the same 4735 segments on the 2h43m file.
+    #
+    # Note this does not make Stage 2 streaming. Inference.__call__ still loads
+    # the whole signal once for the segmentation pass; only the embedding crops
+    # avoid residency.
+    diarization = pipeline(clean_wav_path, **diarize_kwargs)
 
     # Collect raw segments — handle different pyannote output types across versions
     if hasattr(diarization, "itertracks"):
@@ -393,15 +411,14 @@ def run(
             "Check that the audio file is valid and longer than a few seconds."
         )
 
-    # Re-identify speakers globally — must happen before we free the waveform
+    # Re-identify speakers globally. This reads its own audio from the clean WAV
+    # a segment at a time, so it no longer has to run before a waveform is freed.
     num_spk = num_speakers or len(set(s["label"] for s in raw_segments))
     try:
-        raw_segments = _reidentify_speakers(raw_segments, waveform, sample_rate, num_spk)
+        raw_segments = _reidentify_speakers(raw_segments, clean_wav_path, sample_rate, num_spk)
     except Exception as e:
         print(f"[Stage 2] Speaker re-identification failed ({e}) — using pyannote labels as-is")
 
-    # Free the waveform tensors now that re-identification is done
-    del data, waveform, audio_input
     gc.collect()
 
     # Build friendly labels
@@ -418,6 +435,7 @@ def run(
     # Without this, both models sit in VRAM simultaneously (~3.7/4.0 GB on GTX 1650).
     # Moving to CPU + clearing the cache drops Stage 3 VRAM usage by ~1-1.5 GB.
     try:
+        import torch  # bound locally: the device check above may have skipped it
         pipeline.to(torch.device("cpu"))
         del pipeline, diarization, annotation
         torch.cuda.empty_cache()

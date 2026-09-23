@@ -43,14 +43,22 @@ print([a for a in dir(diarization) if not a.startswith('_')])
 torchcodec is not installed correctly so built-in audio decoding will fail.
 ```
 
-**Root cause:** pyannote 3.x tries to use `torchcodec` for file-based audio loading. We don't use that path.
+**Root cause — corrected.** This entry used to say pyannote 3.x needs
+`torchcodec` for file-based audio loading, and that the in-memory dict existed to
+avoid that path. **That was wrong.** pyannote 3.4.0 loads audio through
+`torchaudio`, which picks the **soundfile** backend on this machine:
+`torchaudio.list_audio_backends()` returns `['soundfile']`, torchcodec is not
+installed, and passing a file path works regardless.
 
-**Fix:** Pass audio as a pre-loaded in-memory dict — pyannote's *other* supported input format:
+The warning is emitted on import whatever input form you use, so the dict never
+avoided anything. It was costing real memory for nothing: passing a path lets
+`Audio.crop()` seek-and-read each window from disk, measured at **+5 MB** against
+**+597 MB** for the dict across 300 ten-second crops of a 2h43m file, with
+byte-identical output.
+
+**Fix:** pass the file path.
 ```python
-data, sample_rate = sf.read(clean_wav_path)
-waveform = torch.from_numpy(data).float()
-audio_input = {"waveform": waveform, "sample_rate": sample_rate}
-diarization = pipeline(audio_input, ...)
+diarization = pipeline(clean_wav_path, ...)
 ```
 
 Suppress the warning at import time since it's irrelevant:

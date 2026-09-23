@@ -150,14 +150,30 @@ Do not revert this to a direct `.itertracks()` call on the pipeline output.
 
 ## Audio input to pyannote (important)
 
-Audio is passed to the pyannote pipeline as a pre-loaded in-memory dict — **not** as a file path:
+Audio is passed to the pyannote pipeline as a **file path**:
 
 ```python
-audio_input = {"waveform": waveform, "sample_rate": sample_rate}
-diarization = pipeline(audio_input, ...)
+diarization = pipeline(clean_wav_path, ...)
 ```
 
-This avoids a dependency on `torchcodec` (which is not installed). A `UserWarning` about torchcodec is suppressed at import time since it is irrelevant when using this approach.
+**This reverses earlier guidance.** The pipeline used to build an in-memory
+`{"waveform": ..., "sample_rate": ...}` dict to avoid a `torchcodec` dependency.
+That rationale was wrong for the installed versions: pyannote 3.4.0 reads audio
+through **torchaudio**, not torchcodec, and torchaudio selects the **soundfile**
+backend here — `torchaudio.list_audio_backends()` returns `['soundfile']` and
+torchcodec is not installed. Path input works fine without it.
+
+Passing a path lets `Audio.crop()` seek-and-read each window from disk instead of
+slicing a resident copy of the whole recording. Measured on a 2h43m file, 300
+ten-second crops: **+5 MB** via path against **+597 MB** via the dict. Output is
+unchanged — byte-identical segments both ways on the 2-minute reference file.
+
+The `UserWarning` about torchcodec is still suppressed at import; it is emitted
+regardless of input form and is still irrelevant.
+
+Do **not** revert this to the in-memory dict. Note also that it does not make
+Stage 2 streaming: `Inference.__call__` still loads the whole signal once for the
+segmentation pass, and only the embedding crops avoid residency.
 
 ## Environment variables
 
