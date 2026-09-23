@@ -24,6 +24,19 @@ from collections import Counter
 from config import settings
 from stages import preprocess, diarize, transcribe, export, report
 
+# The pipeline prints characters that cp1252 cannot encode -- the arrow in
+# _print_device_info() and the >= in Stage 2's feature-extraction line. Windows
+# only uses UTF-8 for stdout when it is an interactive console, so redirecting
+# or piping a run crashed it with UnicodeEncodeError before anything ran. Force
+# UTF-8 on both streams instead of requiring PYTHONIOENCODING in the caller's
+# environment. Guarded because a captured or replaced stream (pytest, some IDE
+# consoles) may not be a reconfigurable TextIOWrapper.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError, OSError):
+        pass
+
 
 def _check_ffmpeg() -> None:
     """Abort early with a helpful message if ffmpeg is not on PATH."""
