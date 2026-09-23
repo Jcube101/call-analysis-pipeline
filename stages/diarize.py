@@ -28,6 +28,135 @@ from config import settings
 # at the assignment in run() for why this is set and why 1000.
 MAX_CLUSTERING_EMBEDDINGS = 1000
 
+# Stage 2's peak commit, measured on the 2h43m reference file with the
+# clustering cap in place: 6597 MB, of which roughly 1.25 GB scales with
+# recording length (the waveform pyannote holds, plus the copy the MFCC pass
+# makes). The rest is torch, the CUDA context and the pyannote models.
+#
+# The check below uses ullAvailPageFile, not ullAvailPhys. A MemoryError on
+# Windows is a failed *commit*, and the two are far apart here -- this machine
+# routinely sits at ~1 GB AvailPhys with ~8 GB of commit headroom, and the
+# three verification runs of the 2h43m file started at 0.81, 1.24 and 1.40 GB
+# AvailPhys and all completed. Gating on AvailPhys would reject runs that work.
+_STAGE2_BASE_MB = 5400
+_STAGE2_PER_HOUR_MB = 460
+
+
+def _available_commit_mb() -> Optional[float]:
+    """Commit headroom in MB, or None where that cannot be queried (non-Windows)."""
+    try:
+        import ctypes
+        import ctypes.wintypes as wintypes
+
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", wintypes.DWORD),
+                ("dwMemoryLoad", wintypes.DWORD),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+        if not ctypes.WinDLL("kernel32").GlobalMemoryStatusEx(ctypes.byref(status)):
+            return None
+        return status.ullAvailPageFile / 2 ** 20
+    except Exception:
+        return None
+
+
+def _process_commit_mb() -> Optional[float]:
+    """This process's committed private bytes in MB, or None if unavailable."""
+    try:
+        import ctypes
+
+        class _ProcessMemoryCounters(ctypes.Structure):
+            _fields_ = [
+                ("cb", ctypes.c_ulong),
+                ("PageFaultCount", ctypes.c_ulong),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+                ("PrivateUsage", ctypes.c_size_t),
+            ]
+
+        counters = _ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(_ProcessMemoryCounters)
+        get_current = ctypes.WinDLL("kernel32").GetCurrentProcess
+        get_current.restype = ctypes.c_void_p
+        # argtypes are required here: without them ctypes passes the process
+        # handle as a 32-bit int and the call fails on 64-bit Python. They are
+        # set on a private WinDLL handle rather than ctypes.windll.kernel32,
+        # which caches one function object per process -- annotating the shared
+        # one breaks any other code that calls it with its own struct type.
+        kernel32 = ctypes.WinDLL("kernel32")
+        get_info = kernel32.K32GetProcessMemoryInfo
+        get_info.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_ProcessMemoryCounters),
+            ctypes.c_ulong,
+        ]
+        get_info.restype = ctypes.c_int
+        if not get_info(get_current(), ctypes.byref(counters), counters.cb):
+            return None
+        return counters.PrivateUsage / 2 ** 20
+    except Exception:
+        return None
+
+
+def _check_memory_headroom(clean_wav_path: str) -> None:
+    """Fail before Stage 2 starts if this run cannot fit in available memory.
+
+    Without this the shortfall surfaces ten minutes into a multi-stage run as a
+    MemoryError from deep inside scipy or pyannote, after Stage 1 has already
+    done its work.
+
+    _STAGE2_BASE_MB is a *peak total* for the process, and by the time this
+    runs the process has already committed a good part of it (torch, the CUDA
+    context, whatever Stage 1 left behind). Only the difference still has to
+    come out of system headroom -- comparing the whole peak against headroom
+    rejected the 2h43m file that completes three times out of three.
+    """
+    available = _available_commit_mb()
+    if available is None:
+        return  # cannot measure; do not block the run on a guess
+
+    try:
+        import soundfile as sf
+        info = sf.info(clean_wav_path)
+        hours = (info.frames / info.samplerate) / 3600.0
+    except Exception:
+        return  # unreadable file is Stage 2's problem to report, not this check's
+
+    peak = _STAGE2_BASE_MB + _STAGE2_PER_HOUR_MB * hours
+    already = _process_commit_mb() or 0.0
+    needed = max(0.0, peak - already)
+    if available < needed:
+        raise RuntimeError(
+            "\n".join([
+                f"not enough memory for Stage 2. This {hours * 60:.0f} minute "
+                f"recording needs roughly {needed / 1024:.1f} GB more commit headroom "
+                f"and only {available / 1024:.1f} GB is available.",
+                "  - close other applications and retry, or",
+                "  - raise the Windows page file size, or",
+                "  - split the recording into shorter files.",
+                f"Estimated peak {peak / 1024:.1f} GB (a measured "
+                f"{_STAGE2_BASE_MB / 1024:.1f} GB base for torch, CUDA and the "
+                f"pyannote models, plus {_STAGE2_PER_HOUR_MB} MB per hour of audio), "
+                f"of which {already / 1024:.1f} GB is already committed.",
+            ])
+        )
+
 
 # Map raw pyannote labels → human-friendly labels used in the transcript
 def _label_map(raw_labels: list[str]) -> dict[str, str]:
@@ -176,6 +305,7 @@ def run(
           {"start": float, "end": float, "speaker": "Speaker A", "label": "SPEAKER_00"}
     """
     settings.validate_for_diarization()
+    _check_memory_headroom(clean_wav_path)
 
     print(f"\n[Stage 2] Loading diarization pipeline (pyannote/speaker-diarization-3.1)...")
     import huggingface_hub
