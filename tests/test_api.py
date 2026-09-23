@@ -276,21 +276,36 @@ def test_glob_excludes_transcript_json(tmp_path):
     assert "call_20260401_000000.json" in basenames
 
 
-def test_glob_excludes_input_prefixed_json(tmp_path):
-    """The json glob excludes files starting with 'input'."""
-    import glob as _glob
-    job_dir = str(tmp_path)
-    open(os.path.join(job_dir, "input_20260401_000000.json"), "w").write("")
-    open(os.path.join(job_dir, "call_20260401_000000.json"), "w").write("")
+def test_recovery_finds_input_prefixed_json(tmp_path, monkeypatch):
+    """Recovery hydrates the transcript from input_<timestamp>.json.
 
-    json_files = [
-        f for f in _glob.glob(os.path.join(job_dir, "*.json"))
-        if os.path.basename(f) not in ("transcript.json",)
-        and not os.path.basename(f).startswith("input")
-    ]
-    basenames = [os.path.basename(f) for f in json_files]
-    assert "input_20260401_000000.json" not in basenames
-    assert "call_20260401_000000.json" in basenames
+    Every Stage 4 JSON api.py writes is named input_<timestamp>.json. An
+    earlier filter excluded "input"-prefixed files, so a job recovered from
+    disk reported transcript=None even though the transcript was right there —
+    and /reconnect passed that null straight to the client.
+
+    Calls get_or_recover_job directly rather than replicating its filter, so
+    the assertion cannot drift away from the implementation again.
+    """
+    job_id = "recovery-input-json-job"
+    job_dir = _make_job_dir(str(tmp_path), job_id)
+    open(os.path.join(job_dir, "input_20260401_000000.txt"), "w").write("transcript text")
+    with open(os.path.join(job_dir, "input_20260401_000000.json"), "w") as f:
+        json.dump(
+            {"metadata": {"job_id": job_id}, "transcript": [{"speaker": "Speaker A", "text": "hi"}]},
+            f,
+        )
+
+    monkeypatch.chdir(str(tmp_path))
+    jobs.pop(job_id, None)
+    try:
+        job = get_or_recover_job(job_id)
+        assert job is not None
+        assert os.path.basename(job["files"]["json"]) == "input_20260401_000000.json"
+        assert job["transcript"] == [{"speaker": "Speaker A", "text": "hi"}]
+        assert job["metadata"] == {"job_id": job_id}
+    finally:
+        jobs.pop(job_id, None)
 
 
 # ---------------------------------------------------------------------------

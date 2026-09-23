@@ -192,10 +192,15 @@ def get_or_recover_job(job_id: str) -> Optional[dict]:
         return None
 
     txt_files = _glob.glob(os.path.join(job_dir, "*.txt"))
-    json_files = [
+    # Mirrors the /download json rule: transcript_named.json wins when present,
+    # otherwise any job JSON except transcript.json (the raw report-from-json
+    # upload). Do NOT exclude "input"-prefixed files — every Stage 4 JSON this
+    # server writes is named input_<timestamp>.json, so excluding them left
+    # recovered jobs with transcript=None even though the file was on disk.
+    named_json = _glob.glob(os.path.join(job_dir, "transcript_named.json"))
+    json_files = named_json or [
         f for f in _glob.glob(os.path.join(job_dir, "*.json"))
-        if os.path.basename(f) not in ("transcript.json",)
-        and not os.path.basename(f).startswith("input")
+        if os.path.basename(f) != "transcript.json"
     ]
     report_files = _glob.glob(os.path.join(job_dir, "*_report.md"))
 
