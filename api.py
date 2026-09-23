@@ -877,7 +877,12 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
     except Exception:
         pass
     finally:
-        connections.pop(job_id, None)
+        # Only deregister if this socket is still the registered one. A client
+        # that reconnects (common on ngrok) briefly has two sockets open for the
+        # same job; when the stale one closes, an unconditional pop would remove
+        # the live replacement and leave _push_complete with nowhere to send.
+        if connections.get(job_id) is websocket:
+            connections.pop(job_id, None)
 
 
 # ---------------------------------------------------------------------------

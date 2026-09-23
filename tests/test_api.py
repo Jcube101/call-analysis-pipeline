@@ -438,3 +438,56 @@ def test_env_file_is_gitignored():
         with open(gitignore_path) as f:
             lines = [line.strip() for line in f]
         assert ".env" in lines, ".env is not in .gitignore"
+
+
+# ---------------------------------------------------------------------------
+# WebSocket connection registry
+# ---------------------------------------------------------------------------
+
+def test_closing_stale_socket_keeps_live_reconnect_registered():
+    """A reconnecting client's socket survives the stale socket closing.
+
+    Clients on ngrok briefly hold two sockets open for the same job. The
+    endpoint's cleanup used to pop unconditionally, so the stale socket
+    closing deregistered the live replacement and later pushes went nowhere.
+    """
+    import asyncio
+    from api import connections, websocket_endpoint, WebSocketDisconnect
+
+    job_id = "registry-guard-job"
+
+    class FakeWS:
+        def __init__(self):
+            self.gate = asyncio.Event()
+        async def accept(self):
+            pass
+        async def send_json(self, payload):
+            pass
+        async def receive_text(self):
+            await self.gate.wait()
+            raise WebSocketDisconnect(1006)
+
+    async def scenario():
+        jobs[job_id] = {"status": "running", "message_queue": []}
+        stale, live = FakeWS(), FakeWS()
+        t_stale = asyncio.create_task(websocket_endpoint(stale, job_id))
+        await asyncio.sleep(0.01)
+        t_live = asyncio.create_task(websocket_endpoint(live, job_id))
+        await asyncio.sleep(0.01)
+        assert connections.get(job_id) is live
+
+        stale.gate.set()                     # stale socket drops
+        await asyncio.sleep(0.01)
+        still_registered = connections.get(job_id)
+
+        live.gate.set()                      # tear down
+        await asyncio.gather(t_stale, t_live)
+        return still_registered, live
+
+    try:
+        still_registered, live = asyncio.run(scenario())
+        assert still_registered is live, "live socket was deregistered by the stale one"
+        assert connections.get(job_id) is None, "live socket should deregister itself"
+    finally:
+        connections.pop(job_id, None)
+        jobs.pop(job_id, None)
