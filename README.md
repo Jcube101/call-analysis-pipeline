@@ -10,7 +10,7 @@ A Python pipeline that takes a recorded conversation and produces a clean, speak
 
 | Stage | Description |
 |-------|-------------|
-| 1 — Preprocess | Noise reduction + volume normalization via `noisereduce` and `pydub` |
+| 1 — Preprocess | Noise reduction + volume normalization via `noisereduce` and `soundfile`, decoded by a streaming `ffmpeg` pass |
 | 2 — Diarize | Speaker separation using `pyannote/speaker-diarization-3.1`; global re-identification via voice embeddings + KMeans clustering to fix label flipping on long recordings |
 | 3 — Transcribe | Transcription with faster-whisper (local, GPU-accelerated); two modes: `accurate` (default) and `fast` |
 | 4 — Export | Structured `.txt` and `.json` output with metadata header, uniquely named per run |

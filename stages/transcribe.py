@@ -18,6 +18,10 @@ Both modes attach a segment-level confidence score (derived from Whisper's
 avg_logprob) to every output segment.  When word_timestamps=True is passed,
 each segment also includes a "words" list with per-word start/end times and
 probability scores.
+
+The clean WAV is never loaded in full: _WavReader keeps it open on disk and
+reads only the frames each segment or turn needs, so Stage 3's audio memory is
+bounded by the longest single segment rather than by recording length.
 """
 
 from __future__ import annotations
@@ -27,8 +31,8 @@ import os
 from typing import Optional
 
 import numpy as np
+import soundfile as sf
 from faster_whisper import WhisperModel
-from pydub import AudioSegment
 from tqdm import tqdm
 
 from config import settings
@@ -43,12 +47,81 @@ _active_model = None
 _WHISPER_SR = 16_000
 
 
-def _audio_segment_to_numpy(segment: AudioSegment) -> np.ndarray:
-    """Convert a pydub AudioSegment to a float32 numpy array for Whisper."""
-    seg = segment.set_channels(1).set_frame_rate(_WHISPER_SR)
-    samples = np.array(seg.get_array_of_samples(), dtype=np.float32)
-    samples /= float(2 ** (seg.sample_width * 8 - 1))
-    return samples
+class _WavReader:
+    """Random-access reader over the clean WAV, replacing a full AudioSegment load.
+
+    `AudioSegment.from_wav()` held the entire PCM payload (plus a read copy)
+    resident for the whole of Stage 3 — roughly 2x file size, or ~600 MB for a
+    2h43m recording, on top of whatever Whisper has allocated. Here the file
+    stays on disk and each diarization segment is read on demand, so Stage 3's
+    audio memory is bounded by the longest single segment rather than by
+    recording length.
+
+    Slice arithmetic mirrors pydub's AudioSegment.__getitem__ exactly:
+    millisecond bounds are clamped to the file duration, then truncated to whole
+    frames via `int(ms * frame_rate / 1000.0)`, and a short tail read is padded
+    with silence. Doing the obvious `int(seconds * rate)` instead would shift
+    some boundaries by a frame, so this is deliberate — segment boundaries, and
+    therefore transcription output, are unchanged.
+
+    Samples come back as float32 divided by 2**15, which is what
+    `sf.read(dtype="float32")` does for a PCM_16 file and what the old
+    `_audio_segment_to_numpy()` did by hand — so the arrays handed to Whisper
+    are bit-identical, not merely equivalent.
+    """
+
+    def __init__(self, path: str):
+        self._fh = sf.SoundFile(path, mode="r")
+        self.samplerate = self._fh.samplerate
+        self.frames = self._fh.frames
+        # pydub's __len__: the file's duration in whole milliseconds.
+        self._duration_ms = round(1000 * (self.frames / self.samplerate))
+        self._warned_resample = False
+
+    def __enter__(self) -> "_WavReader":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._fh.close()
+
+    def bounds(self, start_s: float, end_s: float) -> tuple[int, int, int]:
+        """Frame range and millisecond length for a segment, as pydub computed them."""
+        sr = self.samplerate
+        start_ms = min(int(start_s * 1000), self._duration_ms)
+        end_ms = min(int(end_s * 1000), self._duration_ms)
+        start_frame = int(start_ms * (sr / 1000.0))
+        end_frame = int(end_ms * (sr / 1000.0))
+        n_frames = max(0, end_frame - start_frame)
+        return start_frame, end_frame, round(1000 * (n_frames / sr))
+
+    def read(self, start_frame: int, end_frame: int) -> np.ndarray:
+        """Read one segment as a mono float32 array at _WHISPER_SR."""
+        n = max(0, end_frame - start_frame)
+        if n == 0:
+            return np.zeros(0, dtype=np.float32)
+
+        self._fh.seek(start_frame)
+        data = self._fh.read(n, dtype="float32")
+        if data.ndim > 1:
+            data = data.mean(axis=1)  # pydub's set_channels(1) averages channels
+        if len(data) < n:
+            # pydub pads a slice that runs past EOF with silence rather than
+            # returning a short one; match that so lengths stay identical.
+            data = np.concatenate([data, np.zeros(n - len(data), dtype=np.float32)])
+
+        if self.samplerate != _WHISPER_SR:
+            # Only reachable via --skip-preprocess with a WAV that did not come
+            # from Stage 1. pydub used audioop.ratecv here; librosa is a better
+            # resampler but not a bit-identical one, so output can differ
+            # slightly on this path.
+            import librosa
+
+            if not self._warned_resample:
+                print(f"[Stage 3] Input is {self.samplerate} Hz — resampling segments to {_WHISPER_SR} Hz.")
+                self._warned_resample = True
+            data = librosa.resample(data, orig_sr=self.samplerate, target_sr=_WHISPER_SR)
+
+        return data.astype(np.float32, copy=False)
 
 
 def _confidence_from_segments(fw_segs: list) -> float:
@@ -121,7 +194,7 @@ def _merge_turns(segments: list[dict], gap_s: float = 1.0) -> list[dict]:
 
 def _transcribe_accurate(
     model: WhisperModel,
-    audio: AudioSegment,
+    audio: _WavReader,
     segments: list[dict],
     word_timestamps: bool = False,
 ) -> list[dict]:
@@ -132,14 +205,12 @@ def _transcribe_accurate(
     transcribed: list[dict] = []
 
     for seg in tqdm(segments, desc="Transcribing (accurate)", unit="seg"):
-        start_ms = int(seg["start"] * 1000)
-        end_ms   = int(seg["end"]   * 1000)
-        chunk = audio[start_ms:end_ms]
+        start_frame, end_frame, chunk_ms = audio.bounds(seg["start"], seg["end"])
 
-        if len(chunk) < 500:
+        if chunk_ms < 500:
             continue
 
-        audio_array = _audio_segment_to_numpy(chunk)
+        audio_array = audio.read(start_frame, end_frame)
         fw_segs_gen, _ = model.transcribe(
             audio_array,
             language=settings.whisper_language,
@@ -166,7 +237,7 @@ def _transcribe_accurate(
 
 def _transcribe_fast(
     model: WhisperModel,
-    audio: AudioSegment,
+    audio: _WavReader,
     segments: list[dict],
     word_timestamps: bool = False,
 ) -> list[dict]:
@@ -182,14 +253,12 @@ def _transcribe_fast(
     transcribed: list[dict] = []
 
     for turn in tqdm(turns, desc="Transcribing (fast)", unit="turn"):
-        start_ms = int(turn["start"] * 1000)
-        end_ms   = int(turn["end"]   * 1000)
-        chunk = audio[start_ms:end_ms]
+        start_frame, end_frame, chunk_ms = audio.bounds(turn["start"], turn["end"])
 
-        if len(chunk) < 500:
+        if chunk_ms < 500:
             continue
 
-        audio_array = _audio_segment_to_numpy(chunk)
+        audio_array = audio.read(start_frame, end_frame)
         fw_segs_gen, _ = model.transcribe(
             audio_array,
             language=settings.whisper_language,
@@ -250,12 +319,12 @@ def run(
     _active_model = model  # prevent GC / CUDA teardown until process exit
     print(f"[Stage 3] Model loaded. Running in '{mode}' mode{wt_note} on {len(segments)} segment(s)...")
 
-    audio = AudioSegment.from_wav(clean_wav_path)
-
-    if mode == "accurate":
-        transcribed = _transcribe_accurate(model, audio, segments, word_timestamps=word_timestamps)
-    else:
-        transcribed = _transcribe_fast(model, audio, segments, word_timestamps=word_timestamps)
+    # The clean WAV stays on disk; segments are read from it on demand.
+    with _WavReader(clean_wav_path) as audio:
+        if mode == "accurate":
+            transcribed = _transcribe_accurate(model, audio, segments, word_timestamps=word_timestamps)
+        else:
+            transcribed = _transcribe_fast(model, audio, segments, word_timestamps=word_timestamps)
 
     print(f"[Stage 3] Transcription complete. {len(transcribed)} segment(s) produced.")
     return transcribed

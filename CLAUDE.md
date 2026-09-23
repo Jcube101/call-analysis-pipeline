@@ -48,7 +48,7 @@ main.py          — entry point, orchestrates all stages (CLI)
 api.py           — FastAPI HTTP + WebSocket wrapper (programmatic access)
 config.py        — Settings dataclass, loads .env via python-dotenv
 stages/
-  preprocess.py  — Stage 1: noise reduction + normalization (pydub, noisereduce)
+  preprocess.py  — Stage 1: noise reduction + normalization (ffmpeg, noisereduce, soundfile)
   diarize.py     — Stage 2: speaker diarization (pyannote/speaker-diarization-3.1)
   transcribe.py  — Stage 3: faster-whisper transcription (runs locally, GPU-accelerated)
   export.py      — Stage 4: writes timestamped .txt and .json output
@@ -177,7 +177,7 @@ This avoids a dependency on `torchcodec` (which is not installed). A `UserWarnin
 
 ## Dependencies and install order
 
-Key packages: `pydub`, `noisereduce`, `pyannote.audio`, `faster-whisper`, `torch`, `soundfile`, `librosa`, `python-dotenv`, `tqdm`, `google-genai`, `fastapi`, `uvicorn`, `python-multipart`.
+Key packages: `noisereduce`, `pyannote.audio`, `faster-whisper`, `torch`, `soundfile`, `librosa`, `python-dotenv`, `tqdm`, `google-genai`, `fastapi`, `uvicorn`, `python-multipart`.
 System dependency: `ffmpeg` must be on PATH (`main.py` checks this on startup).
 
 Key version constraints (all in `requirements.txt`):

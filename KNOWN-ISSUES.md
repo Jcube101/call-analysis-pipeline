@@ -9,43 +9,143 @@ For solved problems and the reasoning behind existing design choices, see
 
 ---
 
-## 1. `transcribe.py` loads the entire clean WAV into memory
+## 1. `diarize.py` loads the entire clean WAV as float64
 
-**Status:** open — now the only remaining full-file buffer in the pipeline.
+**Status:** open — now the largest audio buffer left in the pipeline, and the
+binding constraint on recording length.
 
-**Where:** [`stages/transcribe.py`](stages/transcribe.py) line 253:
+**Where:** [`stages/diarize.py`](stages/diarize.py) lines 204-208:
 
 ```python
-audio = AudioSegment.from_wav(clean_wav_path)
+data, sample_rate = sf.read(clean_wav_path)      # float64 by default
+...
+waveform = torch.from_numpy(data).float()        # full-length float32 copy
 ```
 
-**Problem:** Stage 3 reads the whole Stage-1 output into a single in-memory
-`AudioSegment` before slicing it per diarization segment. This is the same
-in-memory-buffer pattern that caused the Stage 1 `MemoryError`, just one stage
-later and at a smaller constant factor.
+and again inside `_reidentify_speakers()`:
 
-**Why it did not bite yet:** Stage 1 used to crash first on long recordings, so
-Stage 3 was never reached with a multi-hour file. Now that Stage 1 streams end
-to end, Stage 3 is the only remaining ceiling on recording length.
+```python
+audio_np = waveform[0].numpy().astype(np.float32)  # another full-length copy
+```
 
-**Cost:** the clean WAV is mono 16 kHz 16-bit, so ~115 MB per hour of audio on
-disk. `AudioSegment.from_wav()` takes pydub's WAV fast path — no ffmpeg
-subprocess — but still holds the full PCM payload plus a read copy, so budget
-roughly 2x file size. For the 2h43m reference recording that is a 298 MB WAV and
-~600 MB peak, on top of whatever Whisper has allocated.
+**Problem:** three full-length arrays are live at once. On the 2h43m reference
+recording (156,094,464 frames) that is 1.16 GiB of float64 plus two 595 MB
+float32 copies — roughly **2.5 GB**, versus the ~600 MB that Stage 3 used to
+cost.
 
-**Likely fix:** read slices on demand with `soundfile.read(..., start=, stop=)`
-using the segment offsets, instead of materialising the whole file. `soundfile`
-is already a dependency, and `preprocess.py` now uses exactly this pattern via
-an open `sf.SoundFile` reader with `seek()` / `read(n)`.
+**Measured:** an end-to-end run under 2.1 GB of free RAM clears Stage 1 (116 s,
+peak 1748 MB) and then dies here:
 
-**Constraint:** both `_transcribe_accurate()` and `_transcribe_fast()` take an
-`AudioSegment` and slice it with `audio[start_ms:end_ms]`, so the helper
-signatures change together with the loading strategy.
+```
+File "stages/diarize.py", line 204, in run
+  data, sample_rate = sf.read(clean_wav_path)
+numpy.core._exceptions._ArrayMemoryError:
+  Unable to allocate 1.16 GiB for an array with shape (156094464,) and data type float64
+```
+
+**Cheap partial fix:** the `float64` is gratuitous — it is just `sf.read`'s
+default dtype on a 16-bit file. Passing `dtype="float32"` halves that allocation
+to 595 MB *and* removes a full-length copy, because `torch.from_numpy(data).float()`
+then has nothing to convert. That alone should take the three buffers down to
+two and the total from ~2.5 GB to ~1.2 GB.
+
+**Constraint on a full fix:** unlike Stages 1 and 3, this is not
+straightforwardly streamable. The waveform is handed to pyannote as an in-memory
+`{"waveform": ..., "sample_rate": ...}` dict *on purpose*, to avoid a
+`torchcodec` dependency (see CLAUDE.md, "Audio input to pyannote"). pyannote
+needs the whole signal, and so does the MFCC re-identification pass.
+
+---
+
+## 2. Stage 2 exhausts VRAM on multi-hour recordings
+
+**Status:** open — separate from the RAM issue above, and hit first on a 4 GB GPU.
+
+Diarizing the 2h43m reference recording on a GTX 1650 fails with:
+
+```
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 312.00 MiB.
+GPU 0 has a total capacity of 4.00 GiB of which 2.02 GiB is free.
+```
+
+2 GiB reported free but a 312 MiB allocation failing points at fragmentation;
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is the first thing to try.
+Not investigated further — noted here so it is not re-diagnosed as a RAM problem.
+
+---
+
+## 3. `pydub` is now an unused dependency
+
+**Status:** open — harmless, but it is dead weight.
+
+Nothing in the pipeline imports `pydub` any more: Stage 1 stopped using it when
+decoding moved to a direct ffmpeg pass, and Stage 3 stopped when the clean WAV
+moved behind `_WavReader`. It is still listed in `requirements.txt` and still
+named in CLAUDE.md's description of `stages/preprocess.py`. Removing it means
+one less native-audio dependency to install; the only reason to keep it is that
+`audioop`, which pydub wraps, is removed in Python 3.13 anyway.
 
 ---
 
 ## Resolved
+
+### Stage 3 loaded the entire clean WAV into memory (fixed)
+
+[`stages/transcribe.py`](stages/transcribe.py) used to do
+`audio = AudioSegment.from_wav(clean_wav_path)` and slice that object per
+diarization segment, holding the full PCM payload plus a read copy for the whole
+stage. Replaced with `_WavReader`, which keeps the file open via
+`soundfile.SoundFile` and reads only the frames each segment needs.
+
+Measured on `output/03_Lunch_with_Rachita_clean.wav` (2h43m, 298 MB on disk,
+2490 segments read):
+
+| | before | after |
+|---|---|---|
+| audio buffer alone, peak private | +598 MB | **+25 MB** |
+| audio buffer alone, peak working set | 597 MB | **57 MB** |
+| whole stage with Whisper loaded, peak private | 3754 MB | **3455 MB** |
+| whole stage with Whisper loaded, peak working set | 1553 MB | **1043 MB** |
+
+The +598 MB matches the "roughly 2x file size" estimate this entry originally
+carried. Stage 3's audio cost is now flat with respect to recording length
+instead of growing at ~230 MB per hour of audio.
+
+Under the memory balloon, that 300 MB decides the run at 3.0 GB free:
+
+| Free RAM | before | after |
+|---|---|---|
+| 3.5 GB | completes, 309 s, peak 3757 MB | completes, 332 s, peak 3457 MB |
+| **3.0 GB** | **fails** — `mkl_malloc: failed to allocate memory` | **completes, 330 s, peak 3457 MB** |
+| 2.1 GB | fails at `WhisperModel()` load | fails at `WhisperModel()` load |
+
+**2.1 GB is below Stage 3's floor in either version**, and always was: both fail
+inside `ctranslate2.models.Whisper(...)` before any audio is read. The `medium`
+model alone needs roughly 3 GB of host memory, so the audio buffer was never the
+binding constraint at that level — it only became one between about 3.0 and
+3.5 GB, and on recordings longer than this one it would bind sooner.
+
+**Output is unchanged.** Slice arithmetic mirrors pydub's `__getitem__` exactly —
+millisecond bounds clamped to the file duration, truncated to whole frames via
+`int(ms * rate / 1000.0)`, short tail reads zero-padded — and `sf.read(dtype="float32")`
+divides a PCM_16 sample by 2**15 just as `_audio_segment_to_numpy()` did. Verified
+bit-identical (frame range, 500 ms gate decision, and sample values) across all
+3102 windows of the 2h43m file plus 89 synthetic windows each on four other WAVs,
+including zero-length, sub-500 ms, EOF-overrun and awkward-frame-count cases.
+
+**Do not** treat small transcript diffs between runs as a regression here.
+faster-whisper with `int8_float16` on CUDA is not deterministic: three
+consecutive runs of the *unmodified* old code on the same 1.4 s window produced
+three different texts ("Okay. I'm through." / "I'm through." / "I'm through.
+I'm through. But.", confidence 0.27-0.36). Only low-confidence segments are
+affected.
+
+**One deliberate behaviour difference**, confined to `--skip-preprocess` with a
+WAV that did not come from Stage 1: if the input is not 16 kHz, `_WavReader`
+resamples with `librosa` where pydub used `audioop.ratecv`. librosa's
+band-limited sinc resampler is the better one but is not bit-identical, and
+segment lengths can differ by a frame. Anything produced by Stage 1 is already
+mono 16 kHz and never takes this path.
 
 ### Stage 1 peak memory (fixed — recorded for reference)
 
@@ -81,6 +181,6 @@ imports it; `normalize()` is reproduced in `_normalize_in_place()`, which
 matches `pydub.effects.normalize`'s 0.1 dB headroom default exactly.
 
 **Reproducing the pressure test:** allocate and touch 128 MB blocks until
-`GlobalMemoryStatusEx().ullAvailPhys` reaches the target, then run the pipeline
-as a subprocess under that balloon. Note this holds pages resident, so it is a
-harsher condition than natural memory contention.
+`GlobalMemoryStatusEx().ullAvailPageFile` reaches the target, then run the
+pipeline as a subprocess under that balloon. Note this holds pages resident, so
+it is a harsher condition than natural memory contention.
