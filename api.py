@@ -755,7 +755,11 @@ async def report_from_json(
         "params": params,
         "gemini_model": gemini_model,
         "context_hints": context_hints.strip(),
-        "message_queue": prior.get("message_queue", []),
+        # Always empty: the queue is replayed in full to every client that
+        # connects to /ws, so inheriting the prior run's queue made a fresh job
+        # start out holding that run's "complete" message and replay it before
+        # this job had done anything.
+        "message_queue": [],
         "current_stage": None,
         "stage_name": None,
         "progress_message": None,

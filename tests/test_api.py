@@ -506,3 +506,55 @@ def test_closing_stale_socket_keeps_live_reconnect_registered():
     finally:
         connections.pop(job_id, None)
         jobs.pop(job_id, None)
+
+
+# ---------------------------------------------------------------------------
+# report-from-json job initialisation
+# ---------------------------------------------------------------------------
+
+def test_report_from_json_starts_with_empty_message_queue(tmp_path, monkeypatch):
+    """A fresh report-from-json job never inherits the prior run's queue.
+
+    The queue is replayed in full to every client connecting to /ws, so
+    inheriting it made a new job replay the previous run's "complete" message
+    before this job had produced anything.
+    """
+    import asyncio
+    import api as api_mod
+
+    job_id = "queue-inheritance-job"
+    _make_job_dir(str(tmp_path), job_id)
+    monkeypatch.chdir(str(tmp_path))
+
+    # A prior run for this same job id, still in memory, with a finished queue
+    stale_complete = {"type": "complete", "transcript": [{"text": "old"}], "report": "old"}
+    jobs[job_id] = {
+        "status": "complete",
+        "message_queue": [stale_complete],
+        "transcript": [{"text": "old"}],
+        "metadata": {"job_id": job_id},
+        "files": {"json": "old.json"},
+    }
+
+    class FakeUpload:
+        filename = "transcript.json"
+        async def read(self):
+            return json.dumps(
+                {"metadata": {"job_id": job_id}, "transcript": [{"text": "new"}]}
+            ).encode()
+
+    monkeypatch.setattr(api_mod.executor, "submit", lambda *a, **kw: None)
+
+    try:
+        # Called directly, so the Form(...) defaults must be supplied explicitly
+        asyncio.run(api_mod.report_from_json(
+            file=FakeUpload(),
+            context=None,
+            speaker_names=None,
+            gemini_model="claude-haiku-4-5-20251001",
+            context_hints="",
+        ))
+        assert jobs[job_id]["message_queue"] == []
+        assert stale_complete not in jobs[job_id]["message_queue"]
+    finally:
+        jobs.pop(job_id, None)
