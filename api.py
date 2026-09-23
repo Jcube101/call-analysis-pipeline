@@ -41,6 +41,7 @@ import gc
 import glob as _glob
 import json
 import shutil
+import sys
 import threading
 import time
 import traceback
@@ -58,6 +59,19 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from config import Settings, settings
+
+# Same cp1252 problem main.py has: the stage modules this server runs print
+# characters cp1252 cannot encode (Stage 2's ">=" in its feature-extraction
+# line), and Windows only gives stdout a UTF-8 encoding when it is an
+# interactive console. Running uvicorn with its output piped to a log file
+# would otherwise kill the job thread mid-stage. Done before the stages are
+# imported below. Guarded because a captured or replaced stream (pytest, some
+# process managers) may not be a reconfigurable TextIOWrapper.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError, OSError):
+        pass
 
 ALLOWED_GEMINI_MODELS = [
     "claude-haiku-4-5-20251001",
