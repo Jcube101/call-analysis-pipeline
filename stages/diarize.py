@@ -201,7 +201,13 @@ def run(
     import numpy as np
     import torch
 
-    data, sample_rate = sf.read(clean_wav_path)
+    # dtype="float32" rather than sf.read's float64 default: the clean WAV is
+    # 16-bit, so every sample is int16/2**15 and exactly representable in
+    # float32 — the values are identical either way. Reading float64 cost twice
+    # the memory (1.16 GiB vs 595 MB on a 2h43m file) and forced
+    # torch.from_numpy(data).float() below to make a second full-length copy
+    # while narrowing.
+    data, sample_rate = sf.read(clean_wav_path, dtype="float32")
     if data.ndim == 1:
         data = data[np.newaxis, :]  # add channel dim
     else:

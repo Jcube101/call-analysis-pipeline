@@ -9,85 +9,106 @@ For solved problems and the reasoning behind existing design choices, see
 
 ---
 
-## 1. `diarize.py` loads the entire clean WAV as float64
+## 1. Stage 2 cannot diarize multi-hour recordings on this machine
 
-**Status:** open — now the largest audio buffer left in the pipeline, and the
-binding constraint on recording length.
+**Status:** open — untouched. The only open issue left, and the one that stops a
+2h43m recording. Stages 1 and 3 both clear it.
 
-**Where:** [`stages/diarize.py`](stages/diarize.py) lines 204-208:
+**It presents as a GPU error but the evidence says host RAM.** Read the next
+section before trying a CUDA fix, because the obvious one is unlikely to help.
 
-```python
-data, sample_rate = sf.read(clean_wav_path)      # float64 by default
-...
-waveform = torch.from_numpy(data).float()        # full-length float32 copy
-```
-
-and again inside `_reidentify_speakers()`:
-
-```python
-audio_np = waveform[0].numpy().astype(np.float32)  # another full-length copy
-```
-
-**Problem:** three full-length arrays are live at once. On the 2h43m reference
-recording (156,094,464 frames) that is 1.16 GiB of float64 plus two 595 MB
-float32 copies — roughly **2.5 GB**, versus the ~600 MB that Stage 3 used to
-cost.
-
-**Measured:** an end-to-end run under 2.1 GB of free RAM clears Stage 1 (116 s,
-peak 1748 MB) and then dies here:
+**Symptoms.** Two different failures, both inside Stage 2, depending on how much
+host memory is free:
 
 ```
-File "stages/diarize.py", line 204, in run
-  data, sample_rate = sf.read(clean_wav_path)
-numpy.core._exceptions._ArrayMemoryError:
-  Unable to allocate 1.16 GiB for an array with shape (156094464,) and data type float64
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 158.00 MiB.
+GPU 0 has a total capacity of 4.00 GiB of which 2.98 GiB is free.
+Of the allocated memory 215.13 MiB is allocated by PyTorch, and 12.87 MiB
+is reserved by PyTorch but unallocated.
 ```
 
-**Cheap partial fix:** the `float64` is gratuitous — it is just `sf.read`'s
-default dtype on a 16-bit file. Passing `dtype="float32"` halves that allocation
-to 595 MB *and* removes a full-length copy, because `torch.from_numpy(data).float()`
-then has nothing to convert. That alone should take the three buffers down to
-two and the total from ~2.5 GB to ~1.2 GB.
-
-**Constraint on a full fix:** unlike Stages 1 and 3, this is not
-straightforwardly streamable. The waveform is handed to pyannote as an in-memory
-`{"waveform": ..., "sample_rate": ...}` dict *on purpose*, to avoid a
-`torchcodec` dependency (see CLAUDE.md, "Audio input to pyannote"). pyannote
-needs the whole signal, and so does the MFCC re-identification pass.
-
----
-
-## 2. Stage 2 exhausts VRAM on multi-hour recordings
-
-**Status:** open — separate from the RAM issue above, and hit first on a 4 GB GPU.
-
-Diarizing the 2h43m reference recording on a GTX 1650 fails with:
-
 ```
-torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 312.00 MiB.
-GPU 0 has a total capacity of 4.00 GiB of which 2.02 GiB is free.
+File "pyannote/audio/pipelines/speaker_diarization.py", line 339, in get_embeddings
+RuntimeError: [enforce fail at alloc_cpu.cpp:114] DefaultCPUAllocator:
+  not enough memory: you tried to allocate 640000 bytes.
 ```
 
-2 GiB reported free but a 312 MiB allocation failing points at fragmentation;
-`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is the first thing to try.
-Not investigated further — noted here so it is not re-diagnosed as a RAM problem.
+The second is plainly host RAM — a 640 KB CPU allocation failing. The first
+looks like VRAM but is not: **158 MiB requested, 2.98 GiB free, 215 MiB
+allocated.** No VRAM capacity limit and no fragmentation pattern produces those
+numbers.
 
----
+**Measured directly.** Allocating 128 MiB CUDA blocks in a loop until failure:
 
-## 3. `pydub` is now an unused dependency
+| Host condition | Allocated on GPU before failure | GPU still free | Result |
+|---|---|---|---|
+| no pressure (`AvailPhys` 1.02 GB) | **3.75 GiB** | 0 MiB | no error — hit the test's own cap |
+| under a balloon (`AvailPhys` 0.22 GB) | 1.75 GiB | **1.47 GiB** | `CUDA out of memory` |
 
-**Status:** open — harmless, but it is dead weight.
+On Windows WDDM a CUDA allocation must be backed by host memory, so host RAM
+pressure surfaces as a spurious "CUDA out of memory" with gigabytes of VRAM
+free. Every Stage 2 OOM observed so far happened while `AvailPhys` was
+0.22-1.2 GB. This is the same family as the `WinError 1455` note in CLAUDE.md.
 
-Nothing in the pipeline imports `pydub` any more: Stage 1 stopped using it when
-decoding moved to a direct ffmpeg pass, and Stage 3 stopped when the clean WAV
-moved behind `_WavReader`. It is still listed in `requirements.txt` and still
-named in CLAUDE.md's description of `stages/preprocess.py`. Removing it means
-one less native-audio dependency to install; the only reason to keep it is that
-`audioop`, which pydub wraps, is removed in Python 3.13 anyway.
+**`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is worth one try but is not
+expected to help** — it addresses fragmentation of reserved-but-unallocated
+blocks, and at 215 MiB allocated there is nothing to defragment. Untested.
+
+**The real constraint** is that this box has 7.42 GB of RAM with roughly
+1.0-1.5 GB genuinely free at rest, and pyannote needs the whole waveform
+resident plus its own embedding buffers. The `float32` fix (see Resolved) took
+Stage 2's own buffers from ~2.5 GB to ~1.2 GB and moved the failure point
+noticeably later — from `sf.read` at the very start, through to
+`get_embeddings` near the end — but did not clear it.
+
+**Worth trying, in order:** run Stage 2 on CPU for long files; chunk the
+waveform through pyannote; or free host RAM before the run. Note that the
+waveform is passed in memory *on purpose*, to avoid a `torchcodec` dependency
+(CLAUDE.md, "Audio input to pyannote"), so a file-path-based fix trades one
+problem for another.
 
 ---
 
 ## Resolved
+
+### Stage 2 read the clean WAV as float64 (fixed)
+
+[`stages/diarize.py`](stages/diarize.py) called `sf.read(clean_wav_path)` and
+took `soundfile`'s float64 default on a 16-bit file. On the 2h43m reference
+recording that was a 1.16 GiB array, and because the next line is
+`torch.from_numpy(data).float()`, it also forced a second full-length copy just
+to narrow back to float32. Together with `_reidentify_speakers()`'s own
+`audio_np` copy, three full-length arrays were live at once — roughly 2.5 GB.
+An end-to-end run at 2.1 GB free RAM cleared Stage 1 and then died here with
+`numpy ... Unable to allocate 1.16 GiB for an array with shape (156094464,) and
+data type float64`.
+
+Fixed by passing `dtype="float32"`. Every sample in a 16-bit WAV is
+`int16 / 2**15` and exactly representable in float32, so the values are
+identical — this is a smaller copy of the same numbers, not a new rounding
+step. Verified: the waveform tensor pyannote actually receives is bit-identical
+(`torch.equal` true, max abs diff 0.0), and a full Stage 2 run before and after
+produced byte-identical segment output (37 segments on `01_Test_File_clean.wav`).
+
+The array halves from 1.16 GiB to 595 MB and one full-length copy disappears.
+On the 2h43m file this moved Stage 2's failure point from `sf.read` at the very
+start through to `get_embeddings` near the end — a real improvement, though not
+enough to complete on a 7.42 GB machine (see open issue 1).
+
+**Not fully streamable**, so this is a shrink rather than an elimination: the
+waveform is handed to pyannote as an in-memory
+`{"waveform": ..., "sample_rate": ...}` dict *on purpose*, to avoid a
+`torchcodec` dependency (see CLAUDE.md, "Audio input to pyannote"). pyannote
+needs the whole signal, and so does the MFCC re-identification pass.
+
+### `pydub` removed from the dependency list (fixed)
+
+Nothing imported `pydub` any more: Stage 1 stopped using it when decoding moved
+to a direct ffmpeg pass, and Stage 3 stopped when the clean WAV moved behind
+`_WavReader`. It has been dropped from `requirements.txt`, and CLAUDE.md and
+README.md no longer name it. The remaining mentions in `preprocess.py` and
+`transcribe.py` are comments recording which pydub behaviour each replacement
+reproduces — keep those.
 
 ### Stage 3 loaded the entire clean WAV into memory (fixed)
 
@@ -182,5 +203,13 @@ matches `pydub.effects.normalize`'s 0.1 dB headroom default exactly.
 
 **Reproducing the pressure test:** allocate and touch 128 MB blocks until
 `GlobalMemoryStatusEx().ullAvailPageFile` reaches the target, then run the
-pipeline as a subprocess under that balloon. Note this holds pages resident, so
-it is a harsher condition than natural memory contention.
+pipeline as a subprocess under that balloon.
+
+Two caveats when reading the numbers above. The balloon touches every page to
+force residency, so it is harsher than natural memory contention. And the
+target is **AvailPageFile**, not physical RAM: squeezing to 3.0 GB AvailPageFile
+leaves only ~0.22 GB of AvailPhys on this machine. That is fine for the CPU-only
+work in Stage 1, but it starves the CUDA driver of the host memory it needs to
+back device allocations, so **GPU stages cannot be meaningfully tested under the
+balloon at all** — they fail on host backing rather than on anything the
+pipeline controls.

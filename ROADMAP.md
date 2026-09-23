@@ -133,9 +133,9 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 - [ ] **Watch mode** — auto-process new files as they appear in `input/`
 - [ ] **Update CallAnalysisPipelineDetail.tsx** — reflect full built state including FastAPI, ngrok, web UI, and Gemini model selection
 - [x] **Stream Stage 3 audio slices** — `transcribe.py` reads each diarization segment from disk via `_WavReader` instead of loading the whole clean WAV; audio cost dropped from ~2x file size to a flat ~25 MB
-- [ ] **Shrink the Stage 2 waveform buffers** — `diarize.py` reads the clean WAV as float64 and keeps three full-length arrays live (~2.5 GB on a 2h43m file); now the binding constraint on recording length (see [KNOWN-ISSUES.md](KNOWN-ISSUES.md))
-- [ ] **Stage 2 VRAM ceiling on long recordings** — multi-hour files exhaust a 4 GB GPU during diarization (see [KNOWN-ISSUES.md](KNOWN-ISSUES.md))
-- [ ] **Drop `pydub`** — no longer imported anywhere in the pipeline; still in `requirements.txt`
+- [x] **Shrink the Stage 2 waveform buffers** — `diarize.py` reads the clean WAV as `float32` instead of `soundfile`'s float64 default; 1.16 GiB array down to 595 MB and one full-length copy removed, output bit-identical
+- [x] **Drop `pydub`** — removed from `requirements.txt`; nothing in the pipeline imports it
+- [ ] **Stage 2 VRAM ceiling on long recordings** — multi-hour files exhaust a 4 GB GPU during diarization; GPU memory, not host RAM (see [KNOWN-ISSUES.md](KNOWN-ISSUES.md))
 
 ---
 
