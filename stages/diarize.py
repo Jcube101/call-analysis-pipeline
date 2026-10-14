@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import gc
 import os
+import time
 import warnings
 from typing import Optional
 
@@ -169,6 +170,103 @@ def _label_map(raw_labels: list[str]) -> dict[str, str]:
     sorted_labels = sorted(set(raw_labels))
     letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     return {label: f"Speaker {letters[i]}" for i, label in enumerate(sorted_labels)}
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    """Format seconds as m:ss or h:mm:ss."""
+    seconds = int(seconds)
+    h, m, s = seconds // 3600, (seconds % 3600) // 60, seconds % 60
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+class _PhaseMonitor:
+    """pyannote hook that makes Stage 2 observable in the server log.
+
+    pyannote's own ProgressHook is no use here. It draws rich progress bars,
+    and rich treats a non-TTY stdout as non-interactive: under uvicorn with
+    stdout redirected to a file it printed nothing while the pipeline ran,
+    then one static snapshot of finished bars when it returned. This prints
+    plain lines as it goes -- one per phase change, plus a throttled progress
+    line while a phase reports completed/total.
+
+    pyannote 3.4.0 calls the hook in this order: "segmentation" (progress,
+    then one call carrying the artifact), "speaker_counting" (a single call,
+    made after counting has finished), "embeddings" (progress, then the
+    artifact) and "discrete_diarization". Clustering never calls the hook. It
+    runs between the embeddings artifact and "discrete_diarization", so that
+    gap is reported as a phase of its own.
+
+    Artifacts are never stored -- the hook only reads step names and counts.
+    """
+
+    _PROGRESS_STEP = 0.05     # a progress line every 5% ...
+    _PROGRESS_MIN_GAP = 10.0  # ... but no more often than every 10 s
+    _UNITS = {"segmentation": "chunks", "embeddings": "batches"}
+
+    def __init__(self) -> None:
+        self.phase: Optional[str] = None
+        self._phase_start = 0.0
+        self._last_line = 0.0
+        self._last_fraction = 0.0
+        self._pending_start: Optional[float] = None
+
+    def begin(self, phase: str, started: Optional[float] = None, announce: bool = True) -> None:
+        """Start a phase. `started` backdates it (monotonic seconds)."""
+        now = time.monotonic()
+        self.phase = phase
+        self._phase_start = started if started is not None else now
+        self._last_line = now
+        self._last_fraction = 0.0
+        if announce:
+            print(f"[Stage 2] Phase: {phase}", flush=True)
+
+    def end(self) -> None:
+        self.phase = None
+
+    def __call__(self, step_name, step_artifact, file=None, total=None, completed=None):
+        if completed is not None:
+            if step_name == "embeddings" and self.phase != "embeddings":
+                # Embedding extraction starts right after speaker counting
+                # ends; backdate to then so its setup is counted as embeddings.
+                self.begin("embeddings", started=self._pending_start)
+            self._progress(step_name, completed, total)
+            return
+
+        # A step has finished and handed over its artifact.
+        if step_name == "segmentation":
+            self.begin("speaker counting")
+        elif step_name == "speaker_counting":
+            # Embeddings announce themselves with their first progress call.
+            # With a single speaker they are skipped, along with clustering.
+            self.end()
+            self._pending_start = time.monotonic()
+        elif step_name == "embeddings":
+            self.begin("clustering")
+        elif step_name == "discrete_diarization":
+            self.end()
+
+    def _progress(self, step_name: str, completed: int, total: Optional[int]) -> None:
+        if not total:
+            return
+        completed = min(completed, total)  # Inference overshoots on its last batch
+        fraction = completed / total
+        now = time.monotonic()
+        if (
+            fraction >= 1.0  # the next phase line follows immediately
+            or fraction - self._last_fraction < self._PROGRESS_STEP
+            or now - self._last_line < self._PROGRESS_MIN_GAP
+        ):
+            return
+        elapsed = now - self._phase_start
+        left = elapsed * (1 - fraction) / fraction if fraction > 0 else 0.0
+        unit = self._UNITS.get(step_name, "steps")
+        print(
+            f"[Stage 2]   {step_name} {fraction:.0%} ({completed}/{total} {unit}), "
+            f"{_fmt_elapsed(elapsed)} elapsed, ~{_fmt_elapsed(left)} left",
+            flush=True,
+        )
+        self._last_line = now
+        self._last_fraction = fraction
 
 
 def _reidentify_speakers(
@@ -390,7 +488,12 @@ def run(
     # Note this does not make Stage 2 streaming. Inference.__call__ still loads
     # the whole signal once for the segmentation pass; only the embedding crops
     # avoid residency.
-    diarization = pipeline(clean_wav_path, **diarize_kwargs)
+    #
+    # Segmentation is started here rather than at its first hook call: the
+    # whole-file audio load happens before that call and belongs to it.
+    monitor = _PhaseMonitor()
+    monitor.begin("segmentation")
+    diarization = pipeline(clean_wav_path, hook=monitor, **diarize_kwargs)
 
     # Collect raw segments — handle different pyannote output types across versions
     if hasattr(diarization, "itertracks"):
