@@ -105,6 +105,7 @@ def _build_metadata_block(
     num_speakers: int,
     audio_duration: Optional[float],
     speaker_counts: dict[str, int],
+    warnings: Optional[list[str]] = None,
 ) -> str:
     """Build a human-readable metadata header for the prompt."""
     lines = [
@@ -121,6 +122,8 @@ def _build_metadata_block(
         lines.append(f"Duration:     {duration_str}")
     for spk, cnt in sorted(speaker_counts.items()):
         lines.append(f"  {spk}: {cnt} segment(s)")
+    for warning in warnings or []:
+        lines.append(f"Warning:      {warning}")
     return "\n".join(lines)
 
 
@@ -232,6 +235,7 @@ def run(
     gemini_api_key: Optional[str] = None,
     anthropic_api_key: Optional[str] = None,
     context_hints: str = "",
+    warnings: Optional[list[str]] = None,
 ) -> str:
     """
     Run Stage 5.
@@ -239,6 +243,10 @@ def run(
     Routes to Claude or Gemini based on the analysis_model's provider.
     For backwards compatibility, `api_key` is still accepted and used
     as the Gemini key when `gemini_api_key` is not provided.
+
+    `warnings` (e.g. degraded speaker labels from Stage 2, or a re-uploaded
+    transcript's metadata.warnings) are added to the conversation metadata the
+    model sees and to the report header. With none, both are exactly as before.
 
     Returns:
         Path to the written report file.
@@ -265,8 +273,9 @@ def run(
             f"{context_hints.strip()}\n\n"
             + instruction_prompt
         )
+    warnings = list(warnings or [])
     metadata_block = _build_metadata_block(
-        source_file, context, num_speakers, audio_duration, speaker_counts
+        source_file, context, num_speakers, audio_duration, speaker_counts, warnings
     )
     transcript_text = _build_transcript_text(segments)
 
@@ -324,6 +333,7 @@ def run(
         f"**Speakers:** {num_speakers}  ",
         f"**Model:** {actual_model}  ",
         f"**Generated:** {processed_at}  ",
+        *(f"**Warning:** {warning}  " for warning in warnings),
         "",
         "---",
         "",

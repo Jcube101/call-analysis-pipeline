@@ -137,6 +137,7 @@ Stage 5 is optional and only runs when `--report` is passed. It sends the transc
 - `context_hints` parameter prepended to the system prompt when non-empty — provides correct spelling of names, places, companies, and technical terms
 - Large transcripts (>500k chars) are chunked and partial reports synthesised
 - Output: `output/<name>_<timestamp>_report.md` — header includes source, context, speakers, actual model used (including fallback), and timestamp
+- `warnings=` (Stage 2 re-identification warnings, or a re-uploaded transcript's `metadata.warnings`) adds `Warning:` lines to the metadata block the model sees and `**Warning:**` lines to the report header after `**Generated:**`. With no warnings both are byte-identical to before.
 - First 20 lines printed to terminal as a preview
 
 **SDK note:** Use `google-genai` (not the deprecated `google-generativeai`). Import path is `from google import genai`. Client pattern: `client = genai.Client(api_key=...)`, then `client.models.generate_content(model=..., contents=...)`.
@@ -345,7 +346,7 @@ Unit tests live in `tests/`:
 - `tests/test_config.py` — settings loading, overrides, env var parsing, `validate_for_report()` with per-provider API key checks
 - `tests/test_export.py` — timestamp formatting, JSON schema, speaker name mapping, unique file naming, `write_relabelled()`, secret field leak checks, `metadata.warnings` / `# Warning:` lines only when non-empty
 - `tests/test_api.py` — `get_or_recover_job()` in-memory and disk recovery, glob filter patterns, job state structure, `ALLOWED_MODELS`, the `analysis_model` field via TestClient (legacy remap, unknown fallback), the removed `gemini_model` field being ignored with one log line on both POST endpoints (alone, both sent, legacy ID not remapped), its absence from OpenAPI and `/status`, re-identification warnings end to end through a stubbed `_run_pipeline` / `_run_report_from_json` (job state, `complete`, `/reconnect`, `/status`, terminal line, JSON, .txt; ok / partial / failed; malformed uploaded warnings), API key leak prevention (job dict, /reconnect, WebSocket, SDK exceptions, .gitignore)
-- `tests/test_report.py` — prompt loading from file and fallback defaults, transcript chunking, model fallback on 503, Claude thinking-block handling, max-token truncation guards, Claude/Gemini API key validation, report output leak checks
+- `tests/test_report.py` — prompt loading from file and fallback defaults, `warnings=` in the header and prompt (and an unchanged header without them), transcript chunking, model fallback on 503, Claude thinking-block handling, max-token truncation guards, Claude/Gemini API key validation, report output leak checks
 - `tests/test_progress.py` — the Stage 1/3 progress throttle (`stages/progress.py`): phase messages, 5% / 10 s throttling, rounding, swallowed callback errors
 - `tests/test_models.py` — model registry shape, legacy ID remapping (with log line), unknown-value fallback, provider lookup
 - `tests/test_diarize_reid.py` — Stage 2 speaker re-identification outcome: ok, partial, failed (scikit-learn missing, exception before extraction, unreadable WAV, too few usable segments, clustering exception), the all-or-nothing label write-back, the fewer-speakers warning, and the non-UTF-8 stdout regression

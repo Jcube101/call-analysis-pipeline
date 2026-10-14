@@ -233,6 +233,7 @@ def main() -> None:
             sys.exit(1)
 
         transcribed_segments, json_meta = _load_json_transcript(args.from_json)
+        warnings = export.clean_warnings(json_meta.get("warnings"))
 
         # Apply context/num-speakers from JSON metadata, then CLI overrides
         json_context = json_meta.get("context", "friend")
@@ -280,6 +281,8 @@ def main() -> None:
         print(f"  Segments: {len(transcribed_segments)}")
         if audio_duration:
             print(f"  Duration: {_fmt_duration(audio_duration)}")
+        for warning in warnings:
+            print(f"  Warning:  {warning}")
         print("=" * 60)
 
         total_start = time.time()
@@ -296,6 +299,7 @@ def main() -> None:
                 analysis_model=report_model,
                 gemini_api_key=settings.gemini_api_key,
                 anthropic_api_key=settings.anthropic_api_key,
+                warnings=warnings,
             )
         except Exception as e:
             print(f"\n[error] Stage 5 (report) failed: {e}")
@@ -485,6 +489,7 @@ def main() -> None:
                 analysis_model=report_model,
                 gemini_api_key=settings.gemini_api_key,
                 anthropic_api_key=settings.anthropic_api_key,
+                warnings=warnings,
             )
         except Exception as e:
             print(f"\n[error] Stage 5 (report) failed: {e}")

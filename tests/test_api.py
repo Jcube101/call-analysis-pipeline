@@ -1439,3 +1439,46 @@ def test_report_from_json_tolerates_malformed_warnings(client, monkeypatch, valu
         assert job["warnings"] == expected
     finally:
         jobs.pop(job_id, None)
+
+
+def test_report_from_json_passes_uploaded_warnings_to_stage5(client, monkeypatch):
+    job_id, job, calls = _run_report_job(client, monkeypatch, {"warnings": ["Careful."]})
+    try:
+        assert calls[0]["warnings"] == ["Careful."]
+    finally:
+        jobs.pop(job_id, None)
+
+
+def test_report_from_json_without_warnings_passes_empty_list(client, monkeypatch):
+    job_id, job, calls = _run_report_job(client, monkeypatch, {})
+    try:
+        assert calls[0]["warnings"] == []
+    finally:
+        jobs.pop(job_id, None)
+
+
+def test_pipeline_passes_reid_warnings_to_stage5(client, monkeypatch):
+    outcome, expected = _OUTCOMES["partial"]
+    _stub_heavy_stages(monkeypatch, outcome)
+    calls = []
+
+    def fake_report(**kwargs):
+        calls.append(kwargs)
+        path = os.path.join(kwargs["output_dir"], "input_20261014_120000_report.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("# Call Analysis Report\n")
+        return path
+
+    monkeypatch.setattr(_api.report, "run", fake_report)
+    monkeypatch.setattr(_api.settings, "validate_for_report", lambda model: None)
+    job_id, job = _post_analyse(client, generate_report="true")
+    input_path = next(
+        os.path.join(job["output_dir"], f) for f in os.listdir(job["output_dir"])
+        if f.startswith("input.")
+    )
+    try:
+        _api._run_pipeline(job_id, input_path, job["params"])
+        assert job["status"] == "complete", job.get("error")
+        assert calls[0]["warnings"] == expected
+    finally:
+        jobs.pop(job_id, None)

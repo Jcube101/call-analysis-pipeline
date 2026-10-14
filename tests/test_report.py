@@ -354,3 +354,70 @@ def test_report_output_does_not_contain_api_key(tmp_path, sample_segments):
     content = open(out_path, encoding="utf-8").read()
     assert fake_gemini_key not in content, "Gemini API key leaked into report file"
     assert fake_anthropic_key not in content, "Anthropic API key leaked into report file"
+
+
+# ---------------------------------------------------------------------------
+# warnings= -- header and prompt metadata
+# ---------------------------------------------------------------------------
+
+_WARNING = "Speaker re-identification failed for 80 of 102 segments; labels may be less accurate."
+
+
+def _run_with_warnings(tmp_path, sample_segments, warnings):
+    with patch("stages.report._call_claude", return_value=("# Body", "claude-haiku-5-5")) as mock:
+        out_path = report.run(
+            segments=sample_segments,
+            source_file="test_call.mp3",
+            output_dir=str(tmp_path),
+            context="friend",
+            num_speakers=2,
+            audio_duration=15.8,
+            speaker_counts={"Speaker A": 2, "Speaker B": 1},
+            prompts_dir=str(tmp_path / "prompts"),
+            analysis_model="claude-haiku-5-5",
+            anthropic_api_key="fake-key",
+            warnings=warnings,
+        )
+    with open(out_path, encoding="utf-8") as f:
+        content = f.read()
+    user_message = mock.call_args.args[2]
+    return content, user_message
+
+
+@pytest.mark.parametrize("warnings", [None, []])
+def test_report_without_warnings_has_the_original_header(tmp_path, sample_segments, warnings):
+    content, user_message = _run_with_warnings(tmp_path, sample_segments, warnings)
+    lines = content.splitlines()
+    assert lines[0] == "# Call Analysis Report"
+    assert lines[2:7] == [
+        "**Source:** test_call.mp3  ",
+        "**Context:** friend  ",
+        "**Speakers:** 2  ",
+        "**Model:** claude-haiku-5-5  ",
+        lines[6],
+    ]
+    assert lines[6].startswith("**Generated:** ")
+    assert lines[7:10] == ["", "---", ""]
+    assert "Warning" not in content
+    assert "Warning" not in user_message
+
+
+def test_metadata_block_unchanged_without_warnings():
+    args = ("call.mp3", "friend", 2, 15.8, {"Speaker A": 2})
+    assert report._build_metadata_block(*args) == report._build_metadata_block(*args, None)
+    assert report._build_metadata_block(*args) == report._build_metadata_block(*args, [])
+    assert report._build_metadata_block(*args) == (
+        "Source file:  call.mp3\nContext:      friend\nSpeakers:     2\n"
+        "Duration:     0:15\n  Speaker A: 2 segment(s)"
+    )
+
+
+def test_report_header_and_prompt_show_warnings(tmp_path, sample_segments):
+    second = "Only 1 speaker found but 2 were requested; one speaker may have absorbed the other."
+    content, user_message = _run_with_warnings(tmp_path, sample_segments, [_WARNING, second])
+    lines = content.splitlines()
+    assert lines[6].startswith("**Generated:** ")
+    assert lines[7:9] == [f"**Warning:** {_WARNING}  ", f"**Warning:** {second}  "]
+    assert lines[9:12] == ["", "---", ""]
+    assert f"Warning:      {_WARNING}" in user_message
+    assert f"Warning:      {second}" in user_message

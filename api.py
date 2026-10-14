@@ -658,6 +658,7 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
                     gemini_api_key=settings.gemini_api_key,
                     anthropic_api_key=settings.anthropic_api_key,
                     context_hints=job.get("context_hints", ""),
+                    warnings=job["warnings"],
                 )
             finally:
                 _stop_hb.set()
@@ -770,6 +771,7 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
                 gemini_api_key=settings.gemini_api_key,
                 anthropic_api_key=settings.anthropic_api_key,
                 context_hints=job.get("context_hints", ""),
+                warnings=warnings,
             )
         finally:
             _stop_hb.set()
