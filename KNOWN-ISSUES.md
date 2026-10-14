@@ -147,10 +147,58 @@ fail and PyTorch reports it as a CUDA OOM. Measured directly by allocating
 Every Stage 2 OOM observed so far happened while `AvailPhys` was 0.22-1.2 GB.
 Same family as the `WinError 1455` note in CLAUDE.md.
 
-`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is **unlikely to help but
-low-cost to try** — it addresses fragmentation of reserved-but-unallocated
-blocks, and at 215 MiB allocated there is nothing to defragment. Untested. Do
-not treat it as the leading candidate; the host-RAM work above is.
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is **not an option here**:
+torch 2.5.1 on Windows ignores it and warns `expandable_segments not supported
+on this platform` (checked 2026-10-14). It would not have helped anyway — it
+addresses fragmentation of reserved-but-unallocated blocks, and at 215 MiB
+allocated there is nothing to defragment.
+
+---
+
+## 2. Whisper stays on the GPU between API jobs — OPEN, deliberate
+
+**Status:** known, not being fixed yet. The module global `_active_model` in
+[`stages/transcribe.py`](stages/transcribe.py) holds the last WhisperModel until
+process exit. That is the workaround for ctranslate2's Windows teardown bug
+(see CLAUDE.md), so in the long-lived API server the model outlives its job.
+
+Measured 2026-10-14 with two back-to-back jobs on the 2-minute file in one
+server process (`[job …] Memory at job start/end` lines):
+
+| | free VRAM | torch reserved | process commit |
+|---|---|---|---|
+| job 1 start | 3.22 GB | 0.00 GB | 1.68 GB |
+| job 1 end = job 2 start | 2.23 GB | 0.02 GB | 3.90 GB |
+| job 2 end | 1.63 GB | 0.02 GB | 4.51 GB |
+
+- Job 2's Stage 2 starts with ~1 GB less VRAM. Torch's own cache is back to
+  zero, so the difference is held outside torch — the resident Whisper model.
+- Job 2 loses another ~0.6 GB. Its new WhisperModel is constructed while
+  `_active_model` still holds job 1's, so both are briefly resident; reassigning
+  the global then frees job 1's model mid-process — the case the global exists
+  to avoid. It did not crash in this test. Why the 0.6 GB is not returned is
+  unconfirmed (ctranslate2's own caching allocator is the likely holder).
+- Process commit grew 2.2 GB over job 1 (mostly one-time CUDA/library
+  initialisation) and 0.6 GB over job 2. A third job is needed to tell a
+  steady state from a per-job leak.
+
+## 3. Stage 2 silently skips speaker re-identification under a non-UTF-8 stdout — OPEN
+
+**Status:** known, not fixed. `_reidentify_speakers()` in
+[`stages/diarize.py`](stages/diarize.py) prints `≥` in its "Extracting MFCC
+features" line. When stdout is piped or redirected without UTF-8, Python on this
+machine encodes it as cp1252, the print raises `UnicodeEncodeError`, and
+`run()` catches that as an ordinary re-identification failure:
+
+```
+[Stage 2] Speaker re-identification failed ('charmap' codec can't encode character '≥' ...) — using pyannote labels as-is
+```
+
+Speaker labels then come straight from pyannote, so **the output changes**
+(verified 2026-10-14 on the 2-minute file: piped and UTF-8 runs produce
+different segments). `api.py` and `main.py` reconfigure stdout/stderr to UTF-8
+at startup and are not affected; any other runner that imports the stages with a
+redirected stdout is — set `PYTHONIOENCODING=utf-8` until it is fixed.
 
 ---
 
