@@ -230,10 +230,11 @@ torch.cuda.synchronize()
 torch.cuda.empty_cache()
 gc.collect()
 torch.cuda.empty_cache()
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
 time.sleep(3)
 ```
-The `sleep(3)` gives the CUDA driver time to process the deallocation before the new model is loaded. `PYTORCH_CUDA_ALLOC_CONF` is also set at the top of `api.py` before any torch imports to reduce fragmentation from the start.
+The `sleep(3)` gives the CUDA driver time to process the deallocation before the new model is loaded.
+
+**Correction (2026-10-14):** this block used to also set `PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128`, and `api.py` set the same value at import time "to reduce fragmentation". It did the opposite. Re-applying it after the cleanup was a no-op, since torch reads the variable once when the allocator initialises. The import-time copy stopped the allocator from reusing freed blocks over 128 MB. That pushed Stage 2 past the 4 GB card into shared memory: embeddings were 12x slower on the 2-minute file, and Stage 2 hit CUDA OOM on the 1.72 h file. Both were removed. The cleanup above is what actually frees VRAM for Whisper. See KNOWN-ISSUES.md for the measurements.
 
 ### torchaudio not needed — use soundfile instead
 
@@ -305,7 +306,7 @@ future.result(timeout=5)  # confirm delivery or time out
 
 ### CUDA memory must be freed between pyannote and Whisper
 
-See Learning #12 (Windows-specific issues). The pattern `synchronize() + empty_cache() + gc.collect() + empty_cache() + sleep(3)` between Stage 2 and Stage 3 is required in the API server's background thread, not just in `diarize.run()` itself. `PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128` is also set at startup and re-applied after the cache flush to reduce CUDA memory fragmentation.
+See Learning #12 (Windows-specific issues). The pattern `synchronize() + empty_cache() + gc.collect() + empty_cache() + sleep(3)` between Stage 2 and Stage 3 is required in the API server's background thread, not just in `diarize.run()` itself. Do **not** add `PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb` to it. That setting was removed on 2026-10-14 after it was measured making Stage 2 spill into shared GPU memory and run out of memory (see the correction under Learning #12 and KNOWN-ISSUES.md).
 
 ### Set all job state atomically before sending the complete message
 

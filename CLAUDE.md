@@ -306,10 +306,11 @@ torch.cuda.synchronize()
 torch.cuda.empty_cache()
 gc.collect()
 torch.cuda.empty_cache()
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
 time.sleep(3)
 ```
-Without this, Whisper fails to allocate VRAM because pyannote has not fully released it.
+Without this, Whisper fails to allocate VRAM because pyannote has not fully released it. With it, torch's reservation drops from 2.90 GB at Stage 2 clustering to 0.02 GB, leaving ~3.17 GB free for Whisper (which takes ~0.87 GB).
+
+**Do not set `PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb`.** On this card it stops torch's caching allocator from reusing freed blocks larger than the cap, so pyannote's embedding pass keeps taking fresh memory from the driver. Stage 2's reservation then grows past the 4 GB card and spills into shared GPU memory. Measured 2026-10-14: on the 2-minute file, `max_split_size_mb:128` took embeddings from 0:07 to 1:19 (reserved 5.49 GB vs 2.90 GB); on the 1.72 h file, Stage 2 crashed in embeddings 2 of 2 times with it (the second time with `CUDA error: out of memory`) and ran in 7:05 with no spill without it. Segments are byte-identical either way. `api.py` set it at import time until 2026-10-14; the copy that was re-applied after the cleanup did nothing, because torch reads the variable once when the allocator initialises. `expandable_segments` is unsupported on Windows, and `garbage_collection_threshold:0.8` measured no different from leaving the variable unset. See KNOWN-ISSUES.md.
 
 ### CORS
 

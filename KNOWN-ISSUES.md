@@ -200,6 +200,68 @@ different segments). `api.py` and `main.py` reconfigure stdout/stderr to UTF-8
 at startup and are not affected; any other runner that imports the stages with a
 redirected stdout is — set `PYTHONIOENCODING=utf-8` until it is fixed.
 
+## 4. Stage 2 slow and out of memory because of `PYTORCH_CUDA_ALLOC_CONF` — FIXED
+
+**Status:** fixed 2026-10-14 by removing the setting. On this box Stage 2 could
+sit silent for 30+ minutes, with nvidia-smi showing the GPU at 3.8 of 4 GB and
+Task Manager showing ~2.6 GB of shared GPU memory in use.
+
+### Cause
+
+`api.py` set `PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128` at import time
+(commit `660bb11`, 2026-05-09, "to reduce fragmentation"). That stops torch's
+caching allocator from splitting cached blocks over 128 MB. A probe that frees a
+512 MB block and then asks for 200 MB ends with 514 MB reserved when the
+variable is unset, and 714 MB reserved with the setting. pyannote's embedding
+pass repeats that pattern on every batch, so the reservation grew past the 4 GB
+card and WDDM spilled the rest into shared system memory over PCIe.
+
+A second copy, re-applied after the Stage 2 cleanup, was a no-op: torch reads
+the variable once when the allocator initialises (`memory_stats()["max_split_size"]`
+stays -1 when it is set later).
+
+### Evidence
+
+1.72 h file (`cfb1b759…` input), `num_speakers=2`, each setting in its own
+process, 2026-10-14:
+
+| Setting | Stage 2 phases | Reserved at clustering start | Peak shared GPU memory | Whisper load | Total (Stages 1-3) |
+|---|---|---|---|---|---|
+| **unset** | load 0:06, segmentation 0:21, embeddings 6:19, clustering 0:01, re-id 0:15 = **7:05** | 2.90 GB (0.29 GB free) | 82 MB (baseline, no spill) | OK, 10.4 s | **52:18** |
+| `max_split_size_mb:128`, attempt 1 | crashed ~1 min into embeddings: `LibsndfileError … Format not recognised` | 1.80 GB at embeddings start | 1012 MB | not reached | — |
+| `max_split_size_mb:128`, attempt 2 | crashed ~1 min into embeddings: `RuntimeError: CUDA error: out of memory` | 1.80 GB at embeddings start | 1334 MB | not reached | — |
+| `max_split_size_mb:512` | 7:05 | 3.25 GB (0.00 GB free) | 82 MB | OK, 12.4 s | Stage 2 + load only |
+| `garbage_collection_threshold:0.8` | 7:05 | 2.90 GB | 82 MB | OK, 9.7 s | Stage 2 + load only |
+
+2-minute file (`output/01_Test_File_clean.wav`), Stage 2 only:
+
+| Setting | Embeddings | Reserved at clustering start |
+|---|---|---|
+| unset | 0:07 | 2.90 GB |
+| `max_split_size_mb:128` | 1:19 | 5.49 GB |
+| `max_split_size_mb:512` | 0:08 | 3.25 GB |
+| `garbage_collection_threshold:0.8` | 0:07 | 2.90 GB |
+
+Segments are byte-identical under all four settings: the setting changed speed,
+never output.
+
+**The failure is intermittent; the slowdown is not.** The production job on
+this same file (`cfb1b759…`, 2026-10-14) completed with the old setting, taking
+about 2 hours from upload to transcript. The same stages took 52 minutes
+without it. Under the setting, whether Stage 2 completes depends on how much
+host RAM is free when it spills. The first attempt's file-read error is
+probably the same pressure surfacing differently: a 20,000-open loop on that
+WAV afterwards found nothing wrong with it. That link is inferred, not proven.
+
+### Not options here
+
+- `expandable_segments:True` is unsupported on Windows (see issue 1).
+- `max_split_size_mb:512` buys nothing over unset and ends with 0.00 GB free.
+- The cleanup between Stage 2 and Stage 3 (`synchronize` + `empty_cache` +
+  `gc.collect` + `empty_cache` + `sleep(3)`) is what frees VRAM for Whisper: the
+  reservation falls from 2.90 GB to 0.02 GB, leaving 3.17 GB free before the
+  load. Keep it.
+
 ---
 
 ## Tooling caveat — `squeeze.py` cannot pressure-test GPU stages
