@@ -37,6 +37,8 @@ python main.py --input input/call.mp3 --dry-run
 python main.py --input output/call_clean.wav --skip-preprocess
 # Generate a report from an existing JSON (skips Stages 1–4):
 python main.py --from-json output/call_20260328_151811.json --context work
+# Choose the Stage 5 model (default: claude-haiku-5-5):
+python main.py --from-json output/call_20260328_151811.json --report-model claude-sonnet-5-5
 ```
 
 All config (tokens, context, speaker count, transcription mode, language) lives in `.env`. See `.env.example`.
@@ -47,6 +49,7 @@ All config (tokens, context, speaker count, transcription mode, language) lives 
 main.py          — entry point, orchestrates all stages (CLI)
 api.py           — FastAPI HTTP + WebSocket wrapper (programmatic access)
 config.py        — Settings dataclass, loads .env via python-dotenv
+models.py        — Stage 5 model registry (IDs, labels, providers, default, fallbacks, legacy aliases)
 stages/
   preprocess.py  — Stage 1: noise reduction + normalization (ffmpeg, noisereduce, soundfile)
   diarize.py     — Stage 2: speaker diarization (pyannote/speaker-diarization-3.1)
@@ -81,9 +84,10 @@ output/          — pipeline outputs land here (gitignored, must exist locally)
 - **`CUDA_LAUNCH_BLOCKING=1`** must be set in `.env` when running PyTorch 2.5.x with pyannote 3.4.0. Without it, `torch.vmap` in pyannote's wespeaker fbank crashes Stage 2 with `RuntimeError: CUDA error: unknown error`. Forces synchronous CUDA kernel launches; adds ~10–15% latency to Stage 2, no effect on Stage 3. Set via `os.environ.setdefault` at the top of `api.py` (before any torch import) as a safety net in case `.env` is not loaded first. If `CUDA_LAUNCH_BLOCKING` causes unacceptable slowdown, the alternative is downgrading to torch 2.4.1+cu124 (avoids the 2.5.x vmap regression while preserving CUDA 13.x driver compatibility).
 - **WinError 1455 (paging file too small)** — if `api.py` fails with this error, the root cause is usually a NVIDIA driver update that broke compatibility with the installed PyTorch CUDA version. Reinstall torch with the matching cu wheels to fix.
 - **`/reconnect` report check**: use `if report is None:` (not `if not report:`) when deciding whether to re-read the report from disk — an empty string report is valid and should not trigger a redundant disk read.
-- **`gemini_model` parameter** — accepted by `POST /analyse` and `POST /report-from-json`. Allowed values: `claude-haiku-4-5-20251001` (default), `claude-sonnet-4-6`, `gemini-3-flash-preview`, `gemini-3.1-pro-preview`. Invalid values are silently replaced with the default. Stored on the job dict so background threads read it from job state rather than function arguments. Routes to Claude or Gemini based on the model prefix.
+- **Model registry (`models.py`)** — the only place Stage 5 model IDs live: `MODELS` (ID → label + provider), `DEFAULT_MODEL`, `FALLBACK_MODELS` per provider, and `LEGACY_ALIASES`. `api.py`, `config.py`, `main.py` and `stages/report.py` import from it — do not hardcode model strings elsewhere. `ALLOWED_GEMINI_MODELS` in `api.py` is kept as an alias of `ALLOWED_MODELS` for existing imports.
+- **`gemini_model` parameter** — accepted by `POST /analyse` and `POST /report-from-json` (the field name is kept for frontend compatibility). Allowed values: `claude-haiku-5-5` (default), `claude-sonnet-5-5`, `gemini-3.8-flash`, `gemini-4-argon`. Values pass through `resolve_model()`: Retired IDs (`claude-haiku-4-5-20251001`, `claude-sonnet-4-6`, `gemini-3-flash-preview`, `gemini-3.1-pro-preview`) are remapped to their successors with a `[models] Legacy model ID ...` terminal log line; any other unknown value falls back to the default with a log line. Stored on the job dict so background threads read it from job state rather than function arguments. Provider comes from the registry via `provider_for()`.
 - **`context` parameter** — validated in `api.py` against `ALLOWED_CONTEXTS`: `friend`, `work`, `work_interview`, `date`, `public_interview`, `user_interview`. Invalid values are silently replaced with `"friend"`. The legacy `"interview"` value is no longer accepted; use `"work_interview"` instead.
-- **Automatic fallback** — Claude models fall back to `claude-haiku-4-5-20251001` on failure; Gemini models fall back to `gemini-3-flash-preview` on 503. The model that actually ran is logged at Stage 5 completion and shown in the report markdown header.
+- **Automatic fallback** — Claude models fall back to `claude-haiku-5-5` on failure; Gemini models fall back to `gemini-3.8-flash` on 503. The model that actually ran is logged at Stage 5 completion and shown in the report markdown header.
 - **`context_hints`** — stored on the job dict as `job["context_hints"]` and passed to `report.run()`. Per-request free-text parameter, not a config value. When non-empty, prepended to the system prompt as a "CONTEXT HINTS" block before the instruction prompt.
 - **Report-from-JSON folder linking** — `POST /report-from-json` reads `metadata.job_id` from the uploaded JSON before choosing an output directory. If that job folder exists on disk the report is written there, keeping all files for a call together. Otherwise a new `job_id` and folder are created.
 - **Each new pipeline run must generate a fresh `job_id`** — never reuse a previous `job_id`. The frontend must clear all state (jobId, transcript, report, error, WebSocket) before starting a new run. A `runId` (e.g. `Date.now()`) is useful to discard stale WebSocket messages from a previous run that arrive after the new run starts.
@@ -118,7 +122,10 @@ Two modes selectable via `TRANSCRIPTION_MODE` env var or `--transcription-mode` 
 
 ## Stage 5 — AI report (Claude / Gemini)
 
-Stage 5 is optional and only runs when `--report` is passed. It sends the transcript to `claude-haiku-4-5-20251001` via the `anthropic` SDK by default. Gemini models are also supported — the provider is selected automatically based on the model prefix (`claude-*` → Anthropic, `gemini-*` → Google).
+Stage 5 is optional and only runs when `--report` is passed. It sends the transcript to `claude-haiku-5-5` via the `anthropic` SDK by default. Gemini models are also supported — the provider is looked up in `models.py`. The CLI picks the model with `--report-model`.
+
+- **Claude responses can contain thinking blocks.** Haiku 5.5 returns `[thinking, text]` on report prompts, so `_call_claude_model` joins every `text` block — never read `content[0].text`. Thinking tokens count against `max_tokens` (`_CLAUDE_MAX_TOKENS = 16_000`, kept under the SDK's non-streaming ceiling).
+- **Truncation is an error, not a report.** Claude `stop_reason == "max_tokens"` and Gemini `finish_reason == MAX_TOKENS` raise `RuntimeError` instead of saving a cut-off report. Gemini 4 Argon's output cap is 32k tokens (others 65k).
 
 - Prompt loaded from `prompts/<context>.md` — user can edit these freely. Each prompt defines specific structured output sections and embeds a speaker label reliability warning.
 - Falls back to built-in defaults if the prompt file is missing
@@ -243,13 +250,13 @@ Download endpoints serve directly from disk with no job status check — files a
 **POST `/analyse` form parameters** (all optional except `file`):
 - `file`: audio upload (required)
 - `context`, `num_speakers`, `transcription_mode`, `language`, `speaker_names`, `word_timestamps`, `generate_report`, `skip_preprocess`, `whisper_model` — as documented elsewhere
-- `gemini_model: str` (default: `claude-haiku-4-5-20251001`) — model used for Stage 5. Allowed values: `claude-haiku-4-5-20251001`, `claude-sonnet-4-6`, `gemini-3-flash-preview`, `gemini-3.1-pro-preview`. Invalid values are silently replaced with the default.
+- `gemini_model: str` (default: `claude-haiku-5-5`) — model used for Stage 5. Allowed values: `claude-haiku-5-5`, `claude-sonnet-5-5`, `gemini-3.8-flash`, `gemini-4-argon`. Legacy IDs are remapped to their successors; other invalid values fall back to the default. Both cases print a `[models]` log line.
 - `context_hints: str` (optional, default: `""`) — free-text hints for correct spelling of names, places, companies, and technical terms. Prepended to the system prompt when non-empty.
 
 **POST `/report-from-json` form parameters**:
 - `file`: transcript JSON upload (required)
 - `context`, `speaker_names` — as documented elsewhere
-- `gemini_model: str` (default: `claude-haiku-4-5-20251001`) — same allowed values and fallback as above.
+- `gemini_model: str` (default: `claude-haiku-5-5`) — same allowed values, remapping and fallback as above.
 - `context_hints: str` (optional, default: `""`) — same as above.
 
 ### Job folder file naming
@@ -324,7 +331,8 @@ Unit tests live in `tests/`:
 - `tests/test_config.py` — settings loading, overrides, env var parsing, `validate_for_report()` with per-provider API key checks
 - `tests/test_export.py` — timestamp formatting, JSON schema, speaker name mapping, unique file naming, `write_relabelled()`, secret field leak checks
 - `tests/test_api.py` — `get_or_recover_job()` in-memory and disk recovery, glob filter patterns, job state structure, `ALLOWED_GEMINI_MODELS`, API key leak prevention (job dict, /reconnect, WebSocket, SDK exceptions, .gitignore)
-- `tests/test_report.py` — prompt loading from file and fallback defaults, transcript chunking, model fallback on 503, Claude/Gemini API key validation, report output leak checks
+- `tests/test_report.py` — prompt loading from file and fallback defaults, transcript chunking, model fallback on 503, Claude thinking-block handling, max-token truncation guards, Claude/Gemini API key validation, report output leak checks
+- `tests/test_models.py` — model registry shape, legacy ID remapping (with log line), unknown-value fallback, provider lookup
 
 Run with: `pytest tests/ -v`
 
@@ -344,7 +352,7 @@ A web frontend at job-joseph.com consumes the API. It connects to the ngrok-expo
 
 **Sub-modes:** "Analyse Audio" (full pipeline) and "Report from Transcript" (Stage 5 only from uploaded JSON). Switching between sub-modes clears all result state.
 
-**Model selector:** Available in advanced options. Selection is persisted to `localStorage` key `"cap_gemini_model"`. Supports both Claude models (Haiku for fast/cheap, Sonnet for deeper analysis) and Gemini models (Flash, Pro).
+**Model selector:** Available in advanced options. Selection is persisted to `localStorage` key `"cap_gemini_model"`. Supports both Claude models (Haiku 5.5 for fast/cheap, Sonnet 5.5 for deeper analysis) and Gemini models (3.8 Flash, 4 Argon). Saved values from before the 5.5 / 3.8 migration are remapped by the backend.
 
 **State reset between runs:** All state — `jobId`, transcript, report, error, and the active WebSocket — is fully cleared before each new run. A `runId` (set to `Date.now()` at run start) is compared on every incoming WebSocket message; messages from a previous run are discarded. "Try Again" and sub-mode switching both trigger a full reset.
 

@@ -400,7 +400,7 @@ This two-pass approach is more reliable than trying to engineer perfect automati
 
 ### Claude API is the default provider
 
-As of v1.0, Stage 5 defaults to `claude-haiku-4-5-20251001` via the Anthropic SDK. Claude models fall back to Haiku on any failure. Gemini models are still supported and fall back to Flash on 503.
+As of v1.1, Stage 5 defaults to `claude-haiku-5-5` via the Anthropic SDK (v1.0 used `claude-haiku-4-5-20251001`). Claude models fall back to Haiku on any failure. Gemini models are still supported and fall back to Flash on 503.
 
 ### Gemini HttpOptions timeout was incorrectly configured
 
@@ -436,10 +436,12 @@ Log which model actually ran so failures are diagnosable. The report markdown he
 
 ### Model tradeoffs in practice
 
-- **Claude Haiku** (`claude-haiku-4-5-20251001`) — default, fast, cost-effective, reliable. Good for most conversations.
-- **Claude Sonnet** (`claude-sonnet-4-6`) — deeper analysis, better for complex or high-stakes conversations.
-- **Gemini Flash** (`gemini-3-flash-preview`) — reliable, handles transcripts of any length, completes in under 30 s.
-- **Gemini Pro** (`gemini-3.1-pro-preview`) — deeper analysis on short calls (under 15 min), but unreliable on long transcripts and under high API demand.
+Observed with the v1.0 models; the current IDs are their successors (see section 23).
+
+- **Claude Haiku** (now `claude-haiku-5-5`) — default, fast, cost-effective, reliable. Good for most conversations.
+- **Claude Sonnet** (now `claude-sonnet-5-5`) — deeper analysis, better for complex or high-stakes conversations.
+- **Gemini Flash** (now `gemini-3.8-flash`) — reliable, handles transcripts of any length, completes in under 30 s.
+- **Gemini Pro** (was `gemini-3.1-pro-preview`, now `gemini-4-argon`) — deeper analysis on short calls; the 3.1 Pro preview was unreliable on long transcripts and under high API demand. Argon has not yet been tested on long transcripts.
 
 ---
 
@@ -502,7 +504,7 @@ Never write to the real `output/` directory in tests. Use pytest's `tmp_path` fi
 
 ### pytest-mock and unittest.mock are sufficient for API mocking
 
-Patch `stages.report._call_gemini` / `stages.report._call_claude` or the `_model` variants rather than the SDK itself. This keeps tests stable against SDK version changes. When testing `report.run()`, pass `gemini_model="gemini-3-flash-preview"` explicitly to test the Gemini path (default is now Claude).
+Patch `stages.report._call_gemini` / `stages.report._call_claude` or the `_model` variants rather than the SDK itself. This keeps tests stable against SDK version changes. When testing `report.run()`, pass `gemini_model="gemini-3.8-flash"` explicitly to test the Gemini path (default is now Claude).
 
 ### FastAPI TestClient for future automated API tests
 
@@ -603,3 +605,26 @@ pip install torch==2.4.1+cu124 torchaudio==2.4.1+cu124 --index-url https://downl
 Whisper often misspells names, places, companies, and technical terms. The `context_hints` parameter (accepted by both `POST /analyse` and `POST /report-from-json`) lets the user provide free-text hints that are prepended to the system prompt. The LLM then uses the correct spelling in its report output.
 
 The hints are prepended as a labelled block before the instruction prompt, so they apply to both Claude and Gemini paths without duplicating logic. They are stored on the job dict as `job["context_hints"]` and passed through to `report.run()`. This is a per-request parameter, not a config value — it doesn't belong in `.env`.
+
+## 23. Migrating Stage 5 models (Claude 5.5, Gemini 3.8 Flash / 4 Argon)
+
+### Verify IDs against the API, not by pattern
+
+The Gemini IDs were confirmed from `client.models.list()` with our key (`gemini-3.8-flash`, `gemini-4-argon`) and the Claude IDs with `anthropic.Anthropic().models.retrieve(...)`. Neither Gemini ID follows the old `-preview` naming, so guessing would have been wrong.
+
+### Keep model IDs in one registry
+
+`models.py` holds the IDs, labels, providers, default, per-provider fallbacks and `LEGACY_ALIASES`. Before it, the same strings lived in `api.py` (five places), `config.py`, `stages/report.py` and the tests. Saved frontend state (`localStorage["cap_gemini_model"]`) keeps sending old IDs, so `resolve_model()` remaps them to their successor with a `[models]` log line instead of silently swapping in the default.
+
+### Claude 5.5 can return thinking blocks
+
+On the report prompt, `claude-haiku-5-5` returned `[thinking, text]`; a trivial prompt returned `[text]` only. `message.content[0].text` therefore crashed with `'ThinkingBlock' object has no attribute 'text'`. Join every block whose `type == "text"`. Thinking tokens count against `max_tokens`, so the budget was raised from 4096 to 16 000 (below the SDK's non-streaming ceiling), and `stop_reason == "max_tokens"` now raises rather than saving a truncated report. The Gemini path checks `finish_reason` for `MAX_TOKENS` the same way — Gemini 4 Argon's output cap is 32k tokens, half the others.
+
+### The CLI never passed the Anthropic key
+
+`main.py` called `report.run()` without `gemini_model` or `anthropic_api_key`, so every CLI report defaulted to Claude with an empty key and failed with `Could not resolve authentication method`. `validate_for_report()` passed because the key was in `.env` — validation checked the settings, not what was handed to the call. Both are now passed through, plus a `--report-model` flag.
+
+### Gemini may omit optional sections
+
+`prompts/work.md` says "If none, omit this section" for Risks and Blockers. Gemini 3.8 Flash and 4 Argon omit it on a short call where Claude includes it. That is prompt compliance, not truncation — check the last section is present before suspecting a cut-off.
+

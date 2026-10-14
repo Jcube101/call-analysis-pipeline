@@ -126,7 +126,7 @@ Edit `.env` and fill in:
 - `HUGGINGFACE_TOKEN` — required for speaker diarization. Get a token at https://huggingface.co/settings/tokens, then accept the model license at https://huggingface.co/pyannote/speaker-diarization-3.1
 - `ANTHROPIC_API_KEY` — required for `--report` with Claude models (default). Get a key at https://console.anthropic.com/settings/keys
 - `GEMINI_API_KEY` — required for `--report` with Gemini models. Get a free key at https://aistudio.google.com/app/apikey
-- Supported models (selectable via the web UI or `gemini_model` API parameter): `claude-haiku-4-5-20251001` (default, fast and cost-effective), `claude-sonnet-4-6` (deeper analysis), `gemini-3-flash-preview` (reliable for long transcripts), `gemini-3.1-pro-preview` (deeper analysis, better for short calls under 15 min)
+- Supported models (selectable via the web UI, the `gemini_model` API parameter, or `--report-model` on the CLI): `claude-haiku-5-5` (default, fast and cost-effective), `claude-sonnet-5-5` (deeper analysis), `gemini-3.8-flash` (reliable for long transcripts), `gemini-4-argon` (deeper analysis). The list lives in `models.py`. Old IDs from earlier versions are remapped to their successors.
 - `CONVERSATION_CONTEXT` — `friend`, `work`, `work_interview`, `user_interview`, `public_interview`, or `date`
 - `NUM_SPEAKERS` — integer (e.g. `2`) or leave blank for auto-detection
 - `TRANSCRIPTION_MODE` — `accurate` (default) or `fast`
@@ -156,6 +156,9 @@ python main.py --input input/call.mp3 --context work --num-speakers 3
 
 # Generate an AI analysis report after transcription
 python main.py --input input/call.mp3 --context work --report
+
+# Choose the report model (default: claude-haiku-5-5)
+python main.py --input input/call.mp3 --report --report-model gemini-3.8-flash
 
 # Use fast transcription mode (per-turn, 10-20x fewer Whisper calls than accurate)
 python main.py --input input/call.mp3 --transcription-mode fast
@@ -222,7 +225,7 @@ The completion banner shows a full run summary:
 
 ### Analysis report (Stage 5)
 
-When `--report` is passed, Stage 5 sends the transcript to an LLM and writes a context-aware Markdown report. By default it uses `claude-haiku-4-5-20251001` via the Anthropic API; Gemini models are also supported. The model is selected automatically based on the `gemini_model` parameter prefix (`claude-*` → Anthropic, `gemini-*` → Google). The prompt is loaded from `prompts/<context>.md` — edit these files freely to customise the analysis focus. The report header includes the model that was actually used (including any fallback).
+When `--report` is passed, Stage 5 sends the transcript to an LLM and writes a context-aware Markdown report. By default it uses `claude-haiku-5-5` via the Anthropic API; Gemini models are also supported. Pick the model with `--report-model` (CLI) or the `gemini_model` parameter (API); the provider comes from the registry in `models.py`. The prompt is loaded from `prompts/<context>.md` — edit these files freely to customise the analysis focus. The report header includes the model that was actually used (including any fallback).
 
 Each prompt defines structured output sections and includes a speaker reliability warning (pyannote's diarisation can flip labels on long recordings — the LLM is instructed to base analysis on content, not label consistency).
 
@@ -371,6 +374,7 @@ call-analysis-pipeline/
 ├── main.py               # Entry point — runs the full pipeline (CLI)
 ├── api.py                # FastAPI HTTP + WebSocket wrapper
 ├── config.py             # Loads .env, exposes typed settings
+├── models.py             # Stage 5 model registry: IDs, labels, default, fallbacks, legacy aliases
 ├── stages/
 │   ├── preprocess.py     # Stage 1: noise reduction + normalization
 │   ├── diarize.py        # Stage 2: speaker diarization

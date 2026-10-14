@@ -54,23 +54,31 @@ def _make_job_dir(base_dir, job_id):
 # ---------------------------------------------------------------------------
 
 def test_allowed_gemini_models_contains_flash():
-    assert "gemini-3-flash-preview" in ALLOWED_GEMINI_MODELS
+    assert "gemini-3.8-flash" in ALLOWED_GEMINI_MODELS
 
 
 def test_allowed_gemini_models_contains_pro():
-    assert "gemini-3.1-pro-preview" in ALLOWED_GEMINI_MODELS
+    assert "gemini-4-argon" in ALLOWED_GEMINI_MODELS
 
 
 def test_allowed_models_contains_claude_haiku():
-    assert "claude-haiku-4-5-20251001" in ALLOWED_GEMINI_MODELS
+    assert "claude-haiku-5-5" in ALLOWED_GEMINI_MODELS
 
 
 def test_allowed_models_contains_claude_sonnet():
-    assert "claude-sonnet-4-6" in ALLOWED_GEMINI_MODELS
+    assert "claude-sonnet-5-5" in ALLOWED_GEMINI_MODELS
 
 
-def test_allowed_gemini_models_has_four_entries():
+def test_allowed_gemini_models_matches_registry():
+    from models import ALLOWED_MODELS, MODELS
+    assert ALLOWED_GEMINI_MODELS == ALLOWED_MODELS == list(MODELS)
     assert len(ALLOWED_GEMINI_MODELS) == 4
+
+
+def test_allowed_models_exclude_legacy_ids():
+    """Retired IDs are remapped, not accepted as-is."""
+    from models import LEGACY_ALIASES
+    assert not set(LEGACY_ALIASES) & set(ALLOWED_GEMINI_MODELS)
 
 
 # ---------------------------------------------------------------------------
@@ -374,10 +382,10 @@ def test_job_dict_contains_no_secret_keys():
             "generate_report": True,
             "skip_preprocess": False,
             "whisper_model": "medium",
-            "gemini_model": "claude-haiku-4-5-20251001",
+            "gemini_model": "claude-haiku-5-5",
         },
         "generate_report": True,
-        "gemini_model": "claude-haiku-4-5-20251001",
+        "gemini_model": "claude-haiku-5-5",
         "message_queue": [],
         "current_stage": 5,
         "stage_name": "AI Report",
@@ -444,7 +452,7 @@ def test_anthropic_sdk_does_not_leak_key_in_exceptions():
     try:
         client = anthropic.Anthropic(api_key=fake_key)
         client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model="claude-haiku-5-5",
             max_tokens=1,
             messages=[{"role": "user", "content": "test"}],
         )
@@ -465,14 +473,14 @@ def test_error_message_from_validate_for_report_contains_no_key():
     s_empty_anthropic = Settings()
     s_empty_anthropic.anthropic_api_key = ""
     try:
-        s_empty_anthropic.validate_for_report("claude-haiku-4-5-20251001")
+        s_empty_anthropic.validate_for_report("claude-haiku-5-5")
     except EnvironmentError as e:
         assert "SUPER-SECRET" not in str(e)
 
     s_empty_gemini = Settings()
     s_empty_gemini.gemini_api_key = ""
     try:
-        s_empty_gemini.validate_for_report("gemini-3-flash-preview")
+        s_empty_gemini.validate_for_report("gemini-3.8-flash")
     except EnvironmentError as e:
         assert "SUPER-SECRET" not in str(e)
 
@@ -582,7 +590,7 @@ def test_report_from_json_starts_with_empty_message_queue(tmp_path, monkeypatch)
             file=FakeUpload(),
             context=None,
             speaker_names=None,
-            gemini_model="claude-haiku-4-5-20251001",
+            gemini_model="claude-haiku-5-5",
             context_hints="",
         ))
         assert jobs[job_id]["message_queue"] == []

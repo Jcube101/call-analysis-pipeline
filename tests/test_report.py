@@ -126,7 +126,7 @@ def test_model_fallback_on_503():
             fallback_response.text,
         ]
         text, actual_model = _call_gemini(
-            mock_client, "system", "user", "gemini-3.1-pro-preview"
+            mock_client, "system", "user", "gemini-4-argon"
         )
 
     assert actual_model == GEMINI_FALLBACK_MODEL
@@ -143,7 +143,7 @@ def test_model_fallback_not_triggered_on_other_errors():
     with patch("stages.report._call_gemini_model") as mock_call:
         mock_call.side_effect = Exception("400 BAD REQUEST: invalid api key")
         with pytest.raises(Exception, match="400 BAD REQUEST"):
-            _call_gemini(mock_client, "system", "user", "gemini-3.1-pro-preview")
+            _call_gemini(mock_client, "system", "user", "gemini-4-argon")
 
     assert mock_call.call_count == 1
 
@@ -166,11 +166,67 @@ def test_successful_call_returns_text_and_model():
 
     with patch("stages.report._call_gemini_model", return_value="Great report"):
         text, actual_model = _call_gemini(
-            mock_client, "system", "user", "gemini-3-flash-preview"
+            mock_client, "system", "user", "gemini-3.8-flash"
         )
 
     assert text == "Great report"
-    assert actual_model == "gemini-3-flash-preview"
+    assert actual_model == "gemini-3.8-flash"
+
+
+# ---------------------------------------------------------------------------
+# Response shapes and truncation guards
+# ---------------------------------------------------------------------------
+
+def _claude_message(blocks, stop_reason="end_turn"):
+    message = MagicMock()
+    message.content = blocks
+    message.stop_reason = stop_reason
+    return message
+
+
+def _block(kind, text=""):
+    b = MagicMock()
+    b.type = kind
+    b.text = text
+    return b
+
+
+def test_claude_skips_thinking_blocks():
+    """Claude 5.5 can return a thinking block before the text; only text is kept."""
+    msg = _claude_message([_block("thinking"), _block("text", "Report "), _block("text", "body")])
+    with patch("anthropic.Anthropic") as mock_cls:
+        mock_cls.return_value.messages.create.return_value = msg
+        text = _call_claude_model("key", "system", "user", "claude-haiku-5-5")
+    assert text == "Report body"
+
+
+def test_claude_max_tokens_stop_raises():
+    """A report cut off at max_tokens raises instead of being saved truncated."""
+    msg = _claude_message([_block("text", "Half a rep")], stop_reason="max_tokens")
+    with patch("anthropic.Anthropic") as mock_cls:
+        mock_cls.return_value.messages.create.return_value = msg
+        with pytest.raises(RuntimeError, match="truncated"):
+            _call_claude_model("key", "system", "user", "claude-sonnet-5-5")
+
+
+def test_gemini_max_tokens_finish_raises():
+    """A Gemini response that stopped on its output limit raises."""
+    response = MagicMock()
+    response.text = "Half a rep"
+    response.candidates = [MagicMock(finish_reason="FinishReason.MAX_TOKENS")]
+    client = MagicMock()
+    client.models.generate_content.return_value = response
+    with pytest.raises(RuntimeError, match="truncated"):
+        _call_gemini_model(client, "system", "user", "gemini-4-argon")
+
+
+def test_gemini_normal_finish_returns_text():
+    response = MagicMock()
+    response.text = "Full report"
+    response.candidates = [MagicMock(finish_reason="FinishReason.STOP")]
+    client = MagicMock()
+    client.models.generate_content.return_value = response
+    assert _call_gemini_model(client, "system", "user", "gemini-3.8-flash") == "Full report"
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +235,7 @@ def test_successful_call_returns_text_and_model():
 
 def test_report_saved_to_correct_path(tmp_path, sample_segments):
     """Report file is saved to output_dir with _report.md suffix."""
-    with patch("stages.report._call_gemini", return_value=("# Report content", "gemini-3-flash-preview")):
+    with patch("stages.report._call_gemini", return_value=("# Report content", "gemini-3.8-flash")):
         with patch("stages.report._genai") as mock_genai:
             mock_genai.Client.return_value = MagicMock()
             from stages import report as report_module
@@ -194,7 +250,7 @@ def test_report_saved_to_correct_path(tmp_path, sample_segments):
                 audio_duration=15.8,
                 speaker_counts={"Speaker A": 2, "Speaker B": 1},
                 prompts_dir=str(tmp_path / "prompts"),
-                gemini_model="gemini-3-flash-preview",
+                gemini_model="gemini-3.8-flash",
                 gemini_api_key="fake-key",
             )
 
@@ -205,7 +261,7 @@ def test_report_saved_to_correct_path(tmp_path, sample_segments):
 
 def test_report_saved_to_correct_path_claude(tmp_path, sample_segments):
     """Report file is saved correctly when using a Claude model."""
-    with patch("stages.report._call_claude", return_value=("# Claude report", "claude-haiku-4-5-20251001")):
+    with patch("stages.report._call_claude", return_value=("# Claude report", "claude-haiku-5-5")):
         out_path = report.run(
             segments=sample_segments,
             source_file="test_call.mp3",
@@ -215,7 +271,7 @@ def test_report_saved_to_correct_path_claude(tmp_path, sample_segments):
             audio_duration=15.8,
             speaker_counts={"Speaker A": 2, "Speaker B": 1},
             prompts_dir=str(tmp_path / "prompts"),
-            gemini_model="claude-haiku-4-5-20251001",
+            gemini_model="claude-haiku-5-5",
             anthropic_api_key="fake-key",
         )
 
@@ -225,7 +281,7 @@ def test_report_saved_to_correct_path_claude(tmp_path, sample_segments):
 
 def test_report_file_contains_report_body(tmp_path, sample_segments):
     """Report file contains the text returned by _call_gemini."""
-    with patch("stages.report._call_gemini", return_value=("Unique report body text", "gemini-3-flash-preview")):
+    with patch("stages.report._call_gemini", return_value=("Unique report body text", "gemini-3.8-flash")):
         with patch("stages.report._genai") as mock_genai:
             mock_genai.Client.return_value = MagicMock()
             from stages import report as report_module
@@ -240,7 +296,7 @@ def test_report_file_contains_report_body(tmp_path, sample_segments):
                 audio_duration=None,
                 speaker_counts={"Speaker A": 2, "Speaker B": 1},
                 prompts_dir=str(tmp_path / "prompts"),
-                gemini_model="gemini-3-flash-preview",
+                gemini_model="gemini-3.8-flash",
                 gemini_api_key="fake-key",
             )
 
@@ -254,7 +310,7 @@ def test_run_requires_gemini_api_key(tmp_path, sample_segments):
     s = Settings()
     s.gemini_api_key = ""
     with pytest.raises(EnvironmentError, match="GEMINI_API_KEY"):
-        s.validate_for_report("gemini-3-flash-preview")
+        s.validate_for_report("gemini-3.8-flash")
 
 
 def test_run_requires_anthropic_api_key(tmp_path, sample_segments):
@@ -263,7 +319,7 @@ def test_run_requires_anthropic_api_key(tmp_path, sample_segments):
     s = Settings()
     s.anthropic_api_key = ""
     with pytest.raises(EnvironmentError, match="ANTHROPIC_API_KEY"):
-        s.validate_for_report("claude-haiku-4-5-20251001")
+        s.validate_for_report("claude-haiku-5-5")
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +331,7 @@ def test_report_output_does_not_contain_api_key(tmp_path, sample_segments):
     fake_gemini_key = "FAKE-GEMINI-KEY-SHOULD-NOT-APPEAR"
     fake_anthropic_key = "FAKE-ANTHROPIC-KEY-SHOULD-NOT-APPEAR"
 
-    with patch("stages.report._call_gemini", return_value=("Report body", "gemini-3-flash-preview")):
+    with patch("stages.report._call_gemini", return_value=("Report body", "gemini-3.8-flash")):
         with patch("stages.report._genai") as mock_genai:
             mock_genai.Client.return_value = MagicMock()
             from stages import report as report_module
@@ -290,7 +346,7 @@ def test_report_output_does_not_contain_api_key(tmp_path, sample_segments):
                 audio_duration=None,
                 speaker_counts={"Speaker A": 2, "Speaker B": 1},
                 prompts_dir=str(tmp_path / "prompts"),
-                gemini_model="gemini-3-flash-preview",
+                gemini_model="gemini-3.8-flash",
                 gemini_api_key=fake_gemini_key,
                 anthropic_api_key=fake_anthropic_key,
             )

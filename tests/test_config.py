@@ -83,14 +83,14 @@ def test_validate_for_report_raises_without_gemini_key(monkeypatch):
     s = Settings()
     s.gemini_api_key = ""
     with pytest.raises(EnvironmentError, match="GEMINI_API_KEY"):
-        s.validate_for_report("gemini-3-flash-preview")
+        s.validate_for_report("gemini-3.8-flash")
 
 
 def test_validate_for_report_passes_with_gemini_key(monkeypatch):
     """validate_for_report() passes when GEMINI_API_KEY is set for gemini model."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     s = Settings()
-    s.validate_for_report("gemini-3-flash-preview")  # should not raise
+    s.validate_for_report("gemini-3.8-flash")  # should not raise
 
 
 def test_validate_for_report_raises_without_anthropic_key(monkeypatch):
@@ -99,7 +99,7 @@ def test_validate_for_report_raises_without_anthropic_key(monkeypatch):
     s = Settings()
     s.anthropic_api_key = ""
     with pytest.raises(EnvironmentError, match="ANTHROPIC_API_KEY"):
-        s.validate_for_report("claude-haiku-4-5-20251001")
+        s.validate_for_report("claude-haiku-5-5")
 
 
 def test_validate_for_report_passes_with_anthropic_key(monkeypatch):
@@ -107,7 +107,7 @@ def test_validate_for_report_passes_with_anthropic_key(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     s = Settings()
     s.anthropic_api_key = "test-key"
-    s.validate_for_report("claude-haiku-4-5-20251001")  # should not raise
+    s.validate_for_report("claude-haiku-5-5")  # should not raise
 
 
 def test_invalid_context_env_var_defaults_to_friend(monkeypatch):

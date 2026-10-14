@@ -13,7 +13,7 @@ A local Python pipeline that processes a recorded voice call and produces a clea
 | Parameter | Source | Description |
 |-----------|--------|-------------|
 | `--input FILE` | CLI arg | Path to source audio file (MP3, M4A, WAV, MPEG, or any ffmpeg-supported format). Required unless `--from-json` is used. |
-| `--from-json FILE` | CLI arg | Skip Stages 1–4; generate a Gemini report from an existing transcript JSON (implies `--report`) |
+| `--from-json FILE` | CLI arg | Skip Stages 1–4; generate a report from an existing transcript JSON (implies `--report`) |
 | `--context CTX` | CLI / `.env` | Conversation type: `friend`, `work`, `interview`, `date`, `public_interview` |
 | `--num-speakers N` | CLI / `.env` | Integer speaker count, or omit for auto-detection |
 | `--whisper-model SIZE` | CLI / `.env` | Whisper model size: `tiny`, `base`, `small`, `medium` (default), `large` |
@@ -23,7 +23,8 @@ A local Python pipeline that processes a recorded voice call and produces a clea
 | `--word-timestamps` | CLI / `WORD_TIMESTAMPS=true` | Include per-word start/end times and probabilities in JSON output |
 | `--dry-run` | CLI flag | Validate config and input without running any stage |
 | `--skip-preprocess` | CLI flag | Skip Stage 1; `--input` must be a clean 16 kHz mono WAV |
-| `--report` | CLI flag | Run Stage 5: generate an analysis report via Gemini API |
+| `--report` | CLI flag | Run Stage 5: generate an analysis report via the Claude or Gemini API |
+| `--report-model MODEL` | CLI arg | Stage 5 model: `claude-haiku-5-5` (default), `claude-sonnet-5-5`, `gemini-3.8-flash`, `gemini-4-argon`. Legacy IDs are remapped. |
 
 CLI flags override `.env` values when both are present.
 
@@ -198,19 +199,20 @@ Same model and device setup. Merges consecutive same-speaker diarization segment
 
 Only runs when `--report` is passed. The appropriate API key is validated early (before Stages 1–4 begin) so the run fails fast if the key is missing.
 
-Supports both Anthropic Claude (`claude-*` models) and Google Gemini (`gemini-*` models). The provider is selected automatically based on the model prefix.
+Supports both Anthropic Claude (`claude-*` models) and Google Gemini (`gemini-*` models). Model IDs, labels, providers, the default, fallbacks and legacy aliases live in `models.py`.
 
 | Step | Implementation |
 |------|---------------|
-| Default API | `anthropic` SDK, `claude-haiku-4-5-20251001` model |
-| Alternative API | `google-genai` SDK, `gemini-3-flash-preview` model |
+| Default API | `anthropic` SDK, `claude-haiku-5-5` model (`claude-sonnet-5-5` also available) |
+| Alternative API | `google-genai` SDK, `gemini-3.8-flash` or `gemini-4-argon` |
 | Prompt | Loaded from `prompts/<context>.md`; falls back to built-in defaults |
 | Metadata | Source file, context, speaker count, audio duration, per-speaker segment counts |
 | Context hints | Optional `context_hints` parameter prepended to system prompt for correct spelling of names, places, and terms |
 | Chunking | Transcripts >500k chars split into overlapping chunks; partial reports synthesised in a second API call |
 | Output | `output/<name>_<YYYYMMDD_HHMMSS>_report.md` — header includes source, context, speakers, actual model used, and timestamp |
 | Terminal preview | First 20 lines of the report are printed after Stage 5 completes |
-| Fallback | Claude models fall back to `claude-haiku-4-5-20251001` on failure; Gemini models fall back to `gemini-3-flash-preview` on 503 |
+| Fallback | Claude models fall back to `claude-haiku-5-5` on failure; Gemini models fall back to `gemini-3.8-flash` on 503 |
+| Truncation | A response stopped by the output token limit raises an error rather than writing a truncated report |
 
 **Prompt customisation:** Edit `prompts/<context>.md` to change what the LLM focuses on for each conversation type. The four built-in contexts are `friend`, `work`, `interview`, and `date`. Each prompt defines specific output sections and includes a speaker label reliability warning — pyannote's automatic diarisation can flip speaker labels on long recordings, so prompts instruct the model to base analysis on content rather than assuming label consistency.
 
