@@ -23,10 +23,10 @@ from collections import Counter
 
 from config import settings
 from models import ALLOWED_MODELS, DEFAULT_MODEL, resolve_model
-from stages import preprocess, diarize, transcribe, export, report
+from stages import preprocess, diarize, transcribe, export, report, reid_outcome
 
 # The pipeline prints characters that cp1252 cannot encode -- the arrow in
-# _print_device_info() and the >= in Stage 2's feature-extraction line. Windows
+# _print_device_info(), em dashes, tqdm's bar characters. Windows
 # only uses UTF-8 for stdout when it is an interactive console, so redirecting
 # or piping a run crashed it with UnicodeEncodeError before anything ran. Force
 # UTF-8 on both streams instead of requiring PYTHONIOENCODING in the caller's
@@ -404,11 +404,13 @@ def main() -> None:
 
     # --- Stage 2: Diarization ---
     t = time.time()
+    reid_outcomes: list[dict] = []
     try:
         segments = diarize.run(
             clean_wav_path=clean_wav,
             output_dir=output_dir,
             num_speakers=settings.num_speakers,
+            on_reidentification=reid_outcomes.append,
         )
     except EnvironmentError as e:
         print(f"\n[error] Stage 2 (diarization) configuration error: {e}")
@@ -417,6 +419,7 @@ def main() -> None:
         print(f"\n[error] Stage 2 (diarization) failed: {e}")
         sys.exit(1)
     stage_times["Stage 2"] = time.time() - t
+    warnings = reid_outcome.warnings_for(reid_outcomes[0] if reid_outcomes else None)
 
     # Apply speaker name mapping if provided
     if settings.speaker_names:
@@ -447,6 +450,7 @@ def main() -> None:
             context=settings.context,
             num_speakers=settings.num_speakers,
             speaker_names=settings.speaker_names or None,
+            warnings=warnings,
         )
     except Exception as e:
         print(f"\n[error] Stage 4 (export) failed: {e}")
@@ -518,6 +522,8 @@ def main() -> None:
         print(f"  Audio:        {_fmt_duration(audio_duration)}  |  Elapsed: {_fmt_duration(total_elapsed)}  ({timing_breakdown})")
     else:
         print(f"  Elapsed:      {_fmt_duration(total_elapsed)}  ({timing_breakdown})")
+    for warning in warnings:
+        print(f"  Warning:      {warning}")
     print("=" * 60)
 
 

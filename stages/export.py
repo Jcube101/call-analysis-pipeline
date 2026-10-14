@@ -13,7 +13,8 @@ JSON schema
     "source_file": "test_call.mp3",
     "context": "friend",
     "num_speakers": 2,
-    "processed_at": "2024-01-15T14:30:00"
+    "processed_at": "2024-01-15T14:30:00",
+    "warnings": ["..."]       (only when there is something to warn about)
   },
   "transcript": [
     {
@@ -43,6 +44,20 @@ def _format_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def clean_warnings(value) -> list[str]:
+    """Warnings as a list of non-empty strings, whatever shape they arrived in.
+
+    metadata.warnings is read back from uploaded JSON, which a user may have
+    edited by hand: a bare string becomes a one-item list, and anything that
+    is not a string is dropped rather than failing the job.
+    """
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    return [w.strip() for w in value if isinstance(w, str) and w.strip()]
+
+
 def run(
     segments: list[dict],
     source_file: str,
@@ -51,6 +66,7 @@ def run(
     num_speakers: Optional[int] = None,
     speaker_names: Optional[list] = None,
     job_id: Optional[str] = None,
+    warnings: Optional[list[str]] = None,
 ) -> tuple[str, str]:
     """
     Run Stage 4.
@@ -63,6 +79,10 @@ def run(
         num_speakers:  Speaker count (may be None if auto-detected).
         speaker_names: Real names used for speaker labels, if provided.
         job_id:        API job ID to embed in metadata for round-trip linking.
+        warnings:      Short human-readable warnings about this transcript (e.g.
+                       degraded speaker labels). Written to metadata.warnings
+                       and as "# Warning:" lines in the text header -- only
+                       when non-empty, so a clean run's files are unchanged.
 
     Returns:
         (txt_path, json_path) — absolute paths to the two output files.
@@ -84,6 +104,9 @@ def run(
     })
     if speaker_names:
         metadata["speaker_names"] = speaker_names
+    warnings = clean_warnings(warnings)
+    if warnings:
+        metadata["warnings"] = warnings
 
     # Build a filename stem: <source_basename>_<YYYYMMDD_HHMMSS>
     source_stem = os.path.splitext(os.path.basename(source_file))[0]
@@ -97,7 +120,10 @@ def run(
         f.write(f"# Source:  {metadata['source_file']}\n")
         f.write(f"# Context: {metadata['context']}\n")
         f.write(f"# Speakers: {metadata['num_speakers']}\n")
-        f.write(f"# Processed: {metadata['processed_at']}\n\n")
+        f.write(f"# Processed: {metadata['processed_at']}\n")
+        for warning in warnings:
+            f.write(f"# Warning: {warning}\n")
+        f.write("\n")
 
         for seg in segments:
             ts = _format_timestamp(seg["start"])

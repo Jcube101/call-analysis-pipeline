@@ -284,3 +284,49 @@ def test_json_output_contains_no_secret_fields(tmp_output_dir, sample_segments):
         assert pattern not in raw.lower(), (
             f"JSON output contains secret-looking field: {pattern}"
         )
+
+
+# ---------------------------------------------------------------------------
+# metadata.warnings and "# Warning:" header lines
+# ---------------------------------------------------------------------------
+
+_WARNING = "Speaker re-identification failed for 80 of 102 segments; labels may be less accurate."
+
+
+def _export(tmp_output_dir, sample_segments, **kwargs):
+    txt_path, json_path = run(
+        segments=sample_segments, source_file="call.m4a", output_dir=tmp_output_dir, **kwargs
+    )
+    with open(txt_path, encoding="utf-8") as f:
+        txt = f.read()
+    with open(json_path, encoding="utf-8") as f:
+        data = json.load(f)
+    return txt, data
+
+
+@pytest.mark.parametrize("warnings", [None, []])
+def test_no_warnings_leaves_outputs_unchanged(tmp_output_dir, sample_segments, warnings):
+    txt, data = _export(tmp_output_dir, sample_segments, warnings=warnings)
+    assert "warnings" not in data["metadata"]
+    assert "# Warning" not in txt
+    header, body = txt.split("\n\n", 1)
+    assert header.splitlines()[-1].startswith("# Processed: ")
+    assert body.startswith("[00:00:00] Speaker A:")
+
+
+def test_warnings_written_to_json_and_txt_header(tmp_output_dir, sample_segments):
+    second = "Only 1 speaker found but 2 were requested; one speaker may have absorbed the other."
+    txt, data = _export(tmp_output_dir, sample_segments, warnings=[_WARNING, second])
+    assert data["metadata"]["warnings"] == [_WARNING, second]
+    header, body = txt.split("\n\n", 1)
+    lines = header.splitlines()
+    assert lines[-3].startswith("# Processed: ")
+    assert lines[-2:] == [f"# Warning: {_WARNING}", f"# Warning: {second}"]
+    assert body.startswith("[00:00:00] Speaker A:")
+
+
+def test_relabelled_copy_keeps_warnings(tmp_output_dir, sample_segments, sample_json_file):
+    meta = {"source_file": "call.m4a", "warnings": [_WARNING]}
+    path = write_relabelled(sample_json_file, sample_segments, meta, ["Ann", "Bob"], tmp_output_dir)
+    with open(path, encoding="utf-8") as f:
+        assert json.load(f)["metadata"]["warnings"] == [_WARNING]

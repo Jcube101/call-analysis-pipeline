@@ -18,7 +18,8 @@ Job lifecycle
 WebSocket message shapes
 ------------------------
   {"type": "progress", "stage": 1, "stage_name": "Preprocess", "message": "..."}
-  {"type": "complete", "transcript": [...], "report": "...|null", "metadata": {...}}
+  {"type": "complete", "transcript": [...], "report": "...|null", "metadata": {...},
+   "warnings": ["..."]}
   {"type": "error", "message": "..."}
 
 All messages are appended to job["message_queue"] so reconnecting clients can
@@ -66,8 +67,8 @@ from config import Settings, settings
 from models import DEFAULT_MODEL, resolve_model
 
 # Same cp1252 problem main.py has: the stage modules this server runs print
-# characters cp1252 cannot encode (Stage 2's ">=" in its feature-extraction
-# line), and Windows only gives stdout a UTF-8 encoding when it is an
+# characters cp1252 cannot encode (em dashes, tqdm's bar characters), and
+# Windows only gives stdout a UTF-8 encoding when it is an
 # interactive console. Running uvicorn with its output piped to a log file
 # would otherwise kill the job thread mid-stage. Done before the stages are
 # imported below. Guarded because a captured or replaced stream (pytest, some
@@ -109,7 +110,7 @@ async def _select_analysis_model(request: Request, analysis_model: Optional[str]
 # to avoid re-parsing environment variables per request.
 _default_settings: dict = {}
 
-from stages import diarize, export, preprocess, report, transcribe
+from stages import diarize, export, preprocess, reid_outcome, report, transcribe
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +307,10 @@ def get_or_recover_job(job_id: str) -> Optional[dict]:
         "progress_message": None,
         "transcript": None,
         "metadata": {},
+        # Stage 2's outcome is not written to disk, only the warnings derived
+        # from it (metadata.warnings in the transcript JSON).
+        "reid": None,
+        "warnings": [],
         "report_path": latest_report,
         "report": None,
         "error": None,
@@ -319,6 +324,7 @@ def get_or_recover_job(job_id: str) -> Optional[dict]:
                 data = json.load(f)
             recovered["metadata"] = data.get("metadata", {})
             recovered["transcript"] = data.get("transcript", [])
+            recovered["warnings"] = export.clean_warnings(recovered["metadata"].get("warnings"))
         except Exception:
             pass
 
@@ -469,7 +475,14 @@ def _push_complete(job_id: str) -> None:
         "transcript": job.get("transcript") or [],
         "report": job.get("report"),
         "metadata": job.get("metadata", {}),
+        "warnings": job.get("warnings") or [],
     })
+
+
+def _print_warnings(job_id: str, warnings: list[str]) -> None:
+    """One terminal line per warning, after the completion summary."""
+    for warning in warnings:
+        print(f"[job {job_id}] Warning: {warning}")
 
 
 def _push_error(job_id: str, message: str) -> None:
@@ -541,12 +554,17 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
 
         # Stage 2 — Diarization
         _push_progress(job_id, 2, "Diarize", "Speaker diarization…")
+        reid_outcomes: list[dict] = []
         segments = diarize.run(
             clean_wav_path=clean_wav,
             output_dir=output_dir,
             num_speakers=settings.num_speakers,
             progress=_stage_progress(job_id, 2, "Diarize", "Speaker diarization"),
+            on_reidentification=reid_outcomes.append,
         )
+        # Known from here on, so /status and /reconnect show them mid-run too.
+        job["reid"] = reid_outcomes[0] if reid_outcomes else None
+        job["warnings"] = reid_outcome.warnings_for(job["reid"])
         if settings.speaker_names:
             segments = _apply_speaker_names(segments, settings.speaker_names)
         # Force VRAM to clear fully before Stage 3 loads Whisper.
@@ -585,6 +603,7 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
             num_speakers=settings.num_speakers,
             speaker_names=settings.speaker_names or None,
             job_id=job_id,
+            warnings=job["warnings"],
         )
         _push_progress(job_id, 4, "Export", "Done")
 
@@ -596,6 +615,8 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
             "context": settings.context,
             "num_speakers": settings.num_speakers,
         }
+        if job["warnings"]:
+            job["metadata"]["warnings"] = job["warnings"]
 
         files: dict = {"transcript": txt_path, "json": json_path, "clean_wav": clean_wav}
 
@@ -667,6 +688,7 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
             path = files.get(kind)
             if path:
                 print(f"[job {job_id}]   {kind}: {path}")
+        _print_warnings(job_id, job["warnings"])
 
     except BaseException as exc:
         job["status"] = "error"
@@ -693,6 +715,9 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
         transcribed_segments = data.get("transcript", [])
         if not transcribed_segments:
             raise ValueError("No transcript segments found in the uploaded JSON")
+        # No Stage 2 runs here: the warnings are whatever the uploaded file
+        # carries, so a re-upload keeps the original run's warnings.
+        warnings = export.clean_warnings(json_meta.get("warnings"))
 
         json_context = json_meta.get("context", "friend")
         json_num_speakers = json_meta.get("num_speakers")
@@ -764,6 +789,7 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
         job["report_path"] = report_path
         job["transcript"] = transcribed_segments
         job["metadata"] = json_meta
+        job["warnings"] = warnings
         job["current_stage"] = 5
         job["stage_name"] = "AI Report"
         job["progress_message"] = "Done"
@@ -784,6 +810,7 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
             path = files.get(kind)
             if path:
                 print(f"[job {job_id}]   {kind}: {path}")
+        _print_warnings(job_id, warnings)
 
     except BaseException as exc:
         job["status"] = "error"
@@ -896,6 +923,8 @@ async def analyse(
         "progress_message": None,
         "transcript": None,
         "metadata": {},
+        "reid": None,
+        "warnings": [],
         "report_path": None,
         "report": None,
         "error": None,
@@ -976,6 +1005,10 @@ async def report_from_json(
         "progress_message": None,
         "transcript": prior.get("transcript"),
         "metadata": prior.get("metadata", {}),
+        # Stage 2 does not run for this job. Warnings start as the prior
+        # run's and are replaced by the uploaded file's once it is read.
+        "reid": None,
+        "warnings": prior.get("warnings", []),
         "report": None,
         "error": None,
         "output_dir": job_dir,
@@ -1059,6 +1092,7 @@ async def reconnect(job_id: str):
         "transcript": job.get("transcript"),
         "report": report,
         "metadata": job.get("metadata", {}),
+        "warnings": job.get("warnings") or [],
         "error": job.get("error"),
     }
 

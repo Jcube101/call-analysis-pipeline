@@ -1214,3 +1214,228 @@ def test_stage_progress_shape_for_stages_1_and_3(monkeypatch, stage, stage_name,
         }]
     finally:
         jobs.pop("prog-13", None)
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 re-identification warnings: job state, complete, /reconnect, /status,
+# terminal, transcript JSON and .txt
+# ---------------------------------------------------------------------------
+
+from stages import reid_outcome as _reid_outcome
+
+_STUB_SEGMENTS = [
+    {"start": 0.0, "end": 2.0, "label": "SPEAKER_00", "speaker": "Speaker A"},
+    {"start": 2.5, "end": 4.0, "label": "SPEAKER_01", "speaker": "Speaker B"},
+]
+
+
+def _outcome(status, failed=0, reason=None, found=2):
+    outcome = _reid_outcome.new_outcome(102, 2)
+    outcome.update(
+        status=status, reason=reason, failed_segments=failed,
+        clustered_segments=102 - failed, speakers_found=found,
+    )
+    return outcome
+
+
+_OUTCOMES = {
+    "ok": (_outcome("ok"), []),
+    "partial": (
+        _outcome("partial", failed=80, reason="feature_extraction"),
+        ["Speaker re-identification failed for 80 of 102 segments; labels may be less accurate."],
+    ),
+    "failed": (
+        _outcome("failed", failed=80, reason="exception"),
+        ["Speaker re-identification failed for 80 of 102 segments and then stopped; "
+         "speaker labels come straight from pyannote and may be less accurate."],
+    ),
+}
+
+
+def _stub_heavy_stages(monkeypatch, outcome):
+    """Stand-ins for Stages 2 and 3, plus the torch cleanup _run_pipeline does."""
+    def fake_diarize(clean_wav_path, output_dir, num_speakers=None, progress=None,
+                     on_reidentification=None):
+        if on_reidentification is not None:
+            on_reidentification(dict(outcome))
+        return [dict(s) for s in _STUB_SEGMENTS]
+
+    def fake_transcribe(clean_wav_path, segments, **kwargs):
+        return [dict(s, text=f"line {i}") for i, s in enumerate(segments)]
+
+    torch = types.ModuleType("torch")
+    torch.Tensor = type("Tensor", (), {})
+    monkeypatch.setitem(sys.modules, "torch", torch)  # cleanup's AttributeErrors are caught
+    monkeypatch.setattr(_api.diarize, "run", fake_diarize, raising=False)
+    monkeypatch.setattr(_api.transcribe, "run", fake_transcribe, raising=False)
+    monkeypatch.setattr(_api.time, "sleep", lambda s: None)
+    monkeypatch.setattr(_api, "_send_ws", lambda job_id, payload: None)
+
+
+def _run_stubbed_pipeline(client, monkeypatch, outcome):
+    _stub_heavy_stages(monkeypatch, outcome)
+    job_id, job = _post_analyse(client)
+    input_path = next(
+        os.path.join(job["output_dir"], f) for f in os.listdir(job["output_dir"])
+        if f.startswith("input.")
+    )
+    _api._run_pipeline(job_id, input_path, job["params"])
+    assert job["status"] == "complete", job.get("error")
+    return job_id, job
+
+
+@pytest.mark.parametrize("case", ["ok", "partial", "failed"])
+def test_pipeline_surfaces_reid_warnings_everywhere(client, monkeypatch, capsys, case):
+    outcome, expected = _OUTCOMES[case]
+    job_id, job = _run_stubbed_pipeline(client, monkeypatch, outcome)
+    try:
+        assert job["reid"]["status"] == case
+        assert job["warnings"] == expected
+
+        complete = [m for m in job["message_queue"] if m["type"] == "complete"]
+        assert len(complete) == 1
+        assert complete[0]["warnings"] == expected
+
+        body = client.get(f"/reconnect/{job_id}").json()
+        assert body["warnings"] == expected
+
+        status = client.get(f"/status/{job_id}").json()
+        assert status["warnings"] == expected
+        assert status["reid"]["status"] == case
+
+        out = capsys.readouterr().out
+        summary_at = out.index(f"[job {job_id}] Pipeline complete")
+        for warning in expected:
+            line = f"[job {job_id}] Warning: {warning}"
+            assert line in out
+            assert out.index(line) > summary_at
+        if not expected:
+            assert f"[job {job_id}] Warning:" not in out
+
+        with open(job["files"]["json"], encoding="utf-8") as f:
+            meta = json.load(f)["metadata"]
+        with open(job["files"]["transcript"], encoding="utf-8") as f:
+            txt = f.read()
+        if expected:
+            assert meta["warnings"] == expected
+            assert job["metadata"]["warnings"] == expected
+            for warning in expected:
+                assert f"# Warning: {warning}\n" in txt
+        else:
+            assert "warnings" not in meta
+            assert "warnings" not in job["metadata"]
+            assert "# Warning" not in txt
+    finally:
+        jobs.pop(job_id, None)
+
+
+def test_pipeline_warns_when_fewer_speakers_than_requested(client, monkeypatch):
+    job_id, job = _run_stubbed_pipeline(client, monkeypatch, _outcome("ok", found=1))
+    try:
+        assert job["warnings"] == [
+            "Only 1 speaker found but 2 were requested; one speaker may have absorbed the other."
+        ]
+    finally:
+        jobs.pop(job_id, None)
+
+
+def test_new_jobs_start_with_empty_warnings(client):
+    job_id, job = _post_analyse(client)
+    try:
+        assert job["warnings"] == []
+        assert job["reid"] is None
+        assert client.get(f"/reconnect/{job_id}").json()["warnings"] == []
+    finally:
+        jobs.pop(job_id, None)
+
+
+def test_reconnect_warnings_default_to_empty_list_for_old_job_dicts():
+    """A job dict without the key (older in-memory shape) still gives a list."""
+    assert _reconnect("no-warnings-key", _job(status="complete"))["warnings"] == []
+
+
+def test_recovered_job_reads_warnings_from_transcript_json(tmp_path, monkeypatch):
+    job_id = "recover-warnings"
+    job_dir = _make_job_dir(str(tmp_path), job_id)
+    with open(os.path.join(job_dir, "input_20261014_120000.json"), "w", encoding="utf-8") as f:
+        json.dump({"metadata": {"job_id": job_id, "warnings": ["Careful."]}, "transcript": []}, f)
+    monkeypatch.chdir(tmp_path)
+    try:
+        job = get_or_recover_job(job_id)
+        assert job["warnings"] == ["Careful."]
+        assert job["reid"] is None
+    finally:
+        jobs.pop(job_id, None)
+
+
+def _run_report_job(client, monkeypatch, metadata):
+    """Upload a transcript JSON and run _run_report_from_json with Stage 5 stubbed."""
+    calls = []
+
+    def fake_report(**kwargs):
+        calls.append(kwargs)
+        path = os.path.join(kwargs["output_dir"], "input_20261014_120000_report.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("# Call Analysis Report\n")
+        return path
+
+    monkeypatch.setattr(_api.report, "run", fake_report)
+    monkeypatch.setattr(_api.settings, "validate_for_report", lambda model: None)
+    monkeypatch.setattr(_api, "_send_ws", lambda job_id, payload: None)
+    payload = {"metadata": metadata, "transcript": [dict(s, text="hi") for s in _STUB_SEGMENTS]}
+    files = {"file": ("t.json", json.dumps(payload), "application/json")}
+    job_id = client.post("/report-from-json", files=files).json()["job_id"]
+    job = jobs[job_id]
+    _api._run_report_from_json(job_id, os.path.join(job["output_dir"], "transcript.json"), job["params"])
+    assert job["status"] == "complete", job.get("error")
+    return job_id, job, calls
+
+
+def test_report_from_json_carries_uploaded_warnings(client, monkeypatch, capsys):
+    warning = "Speaker re-identification failed for 80 of 102 segments; labels may be less accurate."
+    job_id, job, _ = _run_report_job(client, monkeypatch, {"warnings": [warning], "extra": {"x": 1}})
+    try:
+        assert job["warnings"] == [warning]
+        complete = [m for m in job["message_queue"] if m["type"] == "complete"]
+        assert complete[0]["warnings"] == [warning]
+        assert client.get(f"/reconnect/{job_id}").json()["warnings"] == [warning]
+        assert client.get(f"/status/{job_id}").json()["warnings"] == [warning]
+        assert f"[job {job_id}] Warning: {warning}" in capsys.readouterr().out
+        # Unknown metadata keys pass through untouched.
+        assert job["metadata"]["extra"] == {"x": 1}
+    finally:
+        jobs.pop(job_id, None)
+
+
+def test_report_from_json_relabelled_copy_keeps_warnings(client, monkeypatch):
+    files = {"file": ("t.json", json.dumps({
+        "metadata": {"warnings": ["Careful."]},
+        "transcript": [dict(s, text="hi") for s in _STUB_SEGMENTS],
+    }), "application/json")}
+    monkeypatch.setattr(_api.report, "run", lambda **kw: os.path.join(kw["output_dir"], "r_report.md"))
+    monkeypatch.setattr(_api.settings, "validate_for_report", lambda model: None)
+    monkeypatch.setattr(_api, "_send_ws", lambda job_id, payload: None)
+    job_id = client.post("/report-from-json", data={"speaker_names": "Ann,Bob"}, files=files).json()["job_id"]
+    job = jobs[job_id]
+    try:
+        _api._run_report_from_json(job_id, os.path.join(job["output_dir"], "transcript.json"), job["params"])
+        with open(job["files"]["json"], encoding="utf-8") as f:
+            assert json.load(f)["metadata"]["warnings"] == ["Careful."]
+    finally:
+        jobs.pop(job_id, None)
+
+
+@pytest.mark.parametrize("value,expected", [
+    (None, []),
+    ([], []),
+    ("One warning.", ["One warning."]),
+    ({"not": "a list"}, []),
+    (["Kept.", 3, None, "  ", {"x": 1}], ["Kept."]),
+])
+def test_report_from_json_tolerates_malformed_warnings(client, monkeypatch, value, expected):
+    metadata = {} if value is None else {"warnings": value}
+    job_id, job, _ = _run_report_job(client, monkeypatch, metadata)
+    try:
+        assert job["warnings"] == expected
+    finally:
+        jobs.pop(job_id, None)
