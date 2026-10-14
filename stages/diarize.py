@@ -209,10 +209,13 @@ class _PhaseMonitor:
         self._last_line = 0.0
         self._last_fraction = 0.0
         self._pending_start: Optional[float] = None
+        self._created = time.monotonic()
+        self.durations: list[tuple[str, float]] = []
 
     def begin(self, phase: str, started: Optional[float] = None, announce: bool = True) -> None:
-        """Start a phase. `started` backdates it (monotonic seconds)."""
+        """Start a phase, closing the current one. `started` backdates it (monotonic seconds)."""
         now = time.monotonic()
+        self._close(now)
         self.phase = phase
         self._phase_start = started if started is not None else now
         self._last_line = now
@@ -221,7 +224,19 @@ class _PhaseMonitor:
             print(f"[Stage 2] Phase: {phase}", flush=True)
 
     def end(self) -> None:
+        self._close(time.monotonic())
+
+    def _close(self, now: float) -> None:
+        if self.phase is not None:
+            self.durations.append((self.phase, now - self._phase_start))
         self.phase = None
+
+    def summary(self) -> str:
+        """Wall-clock per phase, e.g. "segmentation 4:12, embeddings 18:40, ..."."""
+        self.end()
+        parts = [f"{phase} {_fmt_elapsed(secs)}" for phase, secs in self.durations]
+        parts.append(f"total {_fmt_elapsed(time.monotonic() - self._created)}")
+        return ", ".join(parts)
 
     def __call__(self, step_name, step_artifact, file=None, total=None, completed=None):
         if completed is not None:
@@ -423,6 +438,9 @@ def run(
     settings.validate_for_diarization()
     _check_memory_headroom(clean_wav_path)
 
+    monitor = _PhaseMonitor()
+    monitor.begin("model load", announce=False)
+
     print(f"\n[Stage 2] Loading diarization pipeline (pyannote/speaker-diarization-3.1)...")
     import huggingface_hub
     huggingface_hub.login(token=settings.huggingface_token)
@@ -491,9 +509,9 @@ def run(
     #
     # Segmentation is started here rather than at its first hook call: the
     # whole-file audio load happens before that call and belongs to it.
-    monitor = _PhaseMonitor()
     monitor.begin("segmentation")
     diarization = pipeline(clean_wav_path, hook=monitor, **diarize_kwargs)
+    monitor.end()
 
     # Collect raw segments — handle different pyannote output types across versions
     if hasattr(diarization, "itertracks"):
@@ -522,10 +540,12 @@ def run(
     # Re-identify speakers globally. This reads its own audio from the clean WAV
     # a segment at a time, so it no longer has to run before a waveform is freed.
     num_spk = num_speakers or len(set(s["label"] for s in raw_segments))
+    monitor.begin("re-identification", announce=False)
     try:
         raw_segments = _reidentify_speakers(raw_segments, clean_wav_path, sample_rate, num_spk)
     except Exception as e:
         print(f"[Stage 2] Speaker re-identification failed ({e}) — using pyannote labels as-is")
+    monitor.end()
 
     gc.collect()
 
@@ -538,6 +558,7 @@ def run(
         f"[Stage 2] Found {len(set(s['speaker'] for s in raw_segments))} speaker(s), "
         f"{len(raw_segments)} segments"
     )
+    print(f"[Stage 2] Timing: {monitor.summary()}", flush=True)
 
     # Release the pyannote model from VRAM before Stage 3 loads Whisper.
     # Without this, both models sit in VRAM simultaneously (~3.7/4.0 GB on GTX 1650).
