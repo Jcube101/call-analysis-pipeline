@@ -53,6 +53,7 @@ models.py        — Stage 5 model registry (IDs, labels, providers, default, fa
 stages/
   preprocess.py  — Stage 1: noise reduction + normalization (ffmpeg, noisereduce, soundfile)
   diarize.py     — Stage 2: speaker diarization (pyannote/speaker-diarization-3.1)
+  reid_outcome.py — Stage 2 re-identification outcome (ok/partial/failed) and its warning text; no torch
   transcribe.py  — Stage 3: faster-whisper transcription (runs locally, GPU-accelerated)
   export.py      — Stage 4: writes timestamped .txt and .json output
   report.py      — Stage 5: Claude/Gemini API analysis report (--report flag only)
@@ -344,10 +345,13 @@ Unit tests live in `tests/`:
 - `tests/test_report.py` — prompt loading from file and fallback defaults, transcript chunking, model fallback on 503, Claude thinking-block handling, max-token truncation guards, Claude/Gemini API key validation, report output leak checks
 - `tests/test_progress.py` — the Stage 1/3 progress throttle (`stages/progress.py`): phase messages, 5% / 10 s throttling, rounding, swallowed callback errors
 - `tests/test_models.py` — model registry shape, legacy ID remapping (with log line), unknown-value fallback, provider lookup
+- `tests/test_diarize_reid.py` — Stage 2 speaker re-identification outcome: ok, partial, failed (scikit-learn missing, exception before extraction, unreadable WAV, too few usable segments, clustering exception), the all-or-nothing label write-back, the fewer-speakers warning, and the non-UTF-8 stdout regression
 
 Run with: `pytest tests/ -v`
 
 Do **not** add unit tests for `stages/preprocess.py`, `stages/diarize.py`, or `stages/transcribe.py` — these require real model downloads and audio files and are covered by manual integration testing instead.
+
+**Exception: `tests/test_diarize_reid.py`** (added 2026-10-14, at the user's request). It tests only the MFCC + KMeans re-identification pass and the outcome it reports, which need no model download and no GPU: pyannote, torch and huggingface_hub are stubbed, the audio is a few seconds of generated tones, and librosa and scikit-learn run for real. Failures are forced by patching the feature step or the clustering step. It loads `diarize.py` under a private module name because `test_api.py` leaves an empty stub at `sys.modules["stages.diarize"]`. The reason for the exception: a silent re-identification failure degraded a real job's labels on 2026-10-14, and the fallback paths are only reachable by forcing them. Do not extend this to the pyannote pass itself.
 
 Integration and API tests have been completed manually — see README.md for the full list of validated scenarios.
 

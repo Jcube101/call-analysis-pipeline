@@ -28,6 +28,7 @@ with warnings.catch_warnings():
 from tqdm import tqdm
 
 from config import settings
+from stages import reid_outcome
 
 # Upper bound on embeddings handed to agglomerative clustering. See the comment
 # at the assignment in run() for why this is set and why 1000.
@@ -370,6 +371,7 @@ def _reidentify_speakers(
     clean_wav_path: str,
     sample_rate: int,
     num_speakers: int,
+    outcome: Optional[dict] = None,
 ) -> list[dict]:
     """
     Re-assign speaker labels using MFCC features + KMeans clustering.
@@ -390,8 +392,14 @@ def _reidentify_speakers(
     and inherit their label from the nearest longer segment.
 
     Returns the modified segment list, or the original list unchanged if
-    re-identification fails for any reason.
+    re-identification fails for any reason. If `outcome` (see
+    stages/reid_outcome.py) is given, it is filled in as the run goes: counts
+    as soon as feature extraction ends, status and reason on every return.
+    An exception leaves the status for the caller to set.
     """
+    if outcome is None:
+        outcome = reid_outcome.new_outcome(len(segments), num_speakers)
+
     import librosa
     from tqdm import tqdm
 
@@ -400,6 +408,7 @@ def _reidentify_speakers(
         from sklearn.preprocessing import normalize
     except ImportError:
         print("[Stage 2] scikit-learn not installed — skipping speaker re-identification")
+        outcome.update(status=reid_outcome.FAILED, reason="sklearn_missing")
         return segments
 
     import soundfile as sf
@@ -451,6 +460,12 @@ def _reidentify_speakers(
                     first_error = str(exc)
                 continue
 
+    outcome.update(
+        clustered_segments=len(embeddings),
+        short_segments=n_short,
+        failed_segments=n_failed,
+        error=first_error or None,
+    )
     if n_failed > 0:
         print(f"[Stage 2] {n_failed} segment(s) failed feature extraction (first error: {first_error})")
 
@@ -459,6 +474,7 @@ def _reidentify_speakers(
             f"[Stage 2] Only {len(embeddings)} usable features for {num_speakers} speakers "
             f"(filtered short: {n_short}, failed: {n_failed}) — skipping re-identification"
         )
+        outcome.update(status=reid_outcome.FAILED, reason="too_few_features")
         return segments
 
     # Cluster globally
@@ -502,6 +518,8 @@ def _reidentify_speakers(
 
     n_distinct = len(set(s["label"] for s in segments))
     print(f"[Stage 2] Re-identification complete — {n_distinct} distinct speaker(s) after clustering")
+    status = reid_outcome.status_after_clustering(n_failed)
+    outcome.update(status=status, reason=None if status == reid_outcome.OK else "feature_extraction")
     return segments
 
 
@@ -510,6 +528,7 @@ def run(
     output_dir: str,
     num_speakers: Optional[int] = None,
     progress: Optional[Callable[[str, Optional[int], str], None]] = None,
+    on_reidentification: Optional[Callable[[dict], None]] = None,
 ) -> list[dict]:
     """
     Run Stage 2.
@@ -521,6 +540,11 @@ def run(
         progress:        Optional callback(phase, percent_or_None, message),
                          called on each phase change and throttled progress
                          line. See _PhaseMonitor. Errors in it are ignored.
+        on_reidentification: Optional callback(outcome), called once just
+                         before returning with a dict saying how speaker
+                         re-identification went -- ok, partial or failed, with
+                         segment counts and the speaker count found. See
+                         stages/reid_outcome.py. Errors in it are ignored.
 
     Returns:
         List of segment dicts:
@@ -639,9 +663,12 @@ def run(
     # a segment at a time, so it no longer has to run before a waveform is freed.
     num_spk = num_speakers or len(set(s["label"] for s in raw_segments))
     monitor.begin("re-identification", announce=False)
+    outcome = reid_outcome.new_outcome(len(raw_segments), num_speakers)
     try:
-        raw_segments = _reidentify_speakers(raw_segments, clean_wav_path, sample_rate, num_spk)
+        raw_segments = _reidentify_speakers(raw_segments, clean_wav_path, sample_rate, num_spk, outcome)
     except Exception as e:
+        # Counts already recorded (e.g. failed feature extraction) are kept.
+        outcome.update(status=reid_outcome.FAILED, reason="exception", error=str(e))
         print(f"[Stage 2] Speaker re-identification failed ({e}) — using pyannote labels as-is")
     monitor.end()
 
@@ -657,6 +684,20 @@ def run(
         f"{len(raw_segments)} segments"
     )
     print(f"[Stage 2] Timing: {monitor.summary()}", flush=True)
+
+    outcome["speakers_found"] = len(set(s["speaker"] for s in raw_segments))
+    if outcome["status"] != reid_outcome.OK:
+        print(
+            f"[Stage 2] Re-identification {outcome['status']}: "
+            f"{outcome['failed_segments']} of {outcome['total_segments']} segment(s) failed, "
+            f"{outcome['clustered_segments']} clustered, {outcome['short_segments']} short",
+            flush=True,
+        )
+    if on_reidentification is not None:
+        try:
+            on_reidentification(outcome)
+        except Exception as e:
+            print(f"[Stage 2] Re-identification callback failed (ignored): {e}", flush=True)
 
     # Release the pyannote model from VRAM before Stage 3 loads Whisper.
     # Without this, both models sit in VRAM simultaneously (~3.7/4.0 GB on GTX 1650).
