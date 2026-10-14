@@ -886,7 +886,9 @@ async def report_from_json(
         "report": None,
         "error": None,
         "output_dir": job_dir,
-        "files": prior.get("files", {}),
+        # The previous run's report is not this job's output; until Stage 5
+        # writes a new one there is no report to point at.
+        "files": {k: v for k, v in prior.get("files", {}).items() if k != "report"},
     }
     executor.submit(_run_report_from_json, job_id, json_path, params)
 
@@ -916,33 +918,42 @@ async def reconnect(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    # If report content isn't cached in memory, try to read it from disk.
-    # This covers the case where the server restarted after Stage 5 completed,
-    # or where the file read failed silently during the pipeline run.
-    report = job.get("report")
-    if report is None:
-        report_path = job.get("report_path")
-        if not report_path:
-            job_dir = job.get("output_dir", f"output/jobs/{job_id}")
-            report_path = _latest_report(job_dir)
-            if report_path:
-                job["report_path"] = report_path
-        if report_path and os.path.isfile(report_path):
-            try:
-                with open(report_path, encoding="utf-8") as f:
-                    report = f.read()
-                    job["report"] = report  # cache for subsequent calls
-            except Exception:
-                pass
-
     # One unambiguous terminal flag alongside the status string. Every
     # non-terminal state returns transcript=None and report=None, which is
     # byte-identical to a failure, so a client that renders from the payload
     # rather than branching on status first cannot tell "not finished yet"
     # from "finished, produced nothing". "unknown" is deliberately not done:
     # a recovered folder with no outputs is not a job we can vouch for.
+    #
+    # Status is read BEFORE report. The worker thread sets job["report"] and
+    # only then job["status"] = "complete", so a terminal status seen here
+    # guarantees the worker's report is already on the job.
     status = job.get("status")
     done = status in ("complete", "error")
+
+    # If report content isn't cached in memory, try to read it from disk.
+    # This covers the case where the server restarted after Stage 5 completed,
+    # or where the file read failed silently during the pipeline run.
+    # Skipped while the job is queued or running: the folder can still hold a
+    # previous run's report, and serving (or caching) that mid-run is how a
+    # stale report reached a client and could overwrite the new one.
+    report = job.get("report")
+    if report is None and status not in ("queued", "running"):
+        report_path = job.get("report_path")
+        if not report_path:
+            job_dir = job.get("output_dir", f"output/jobs/{job_id}")
+            report_path = _latest_report(job_dir)
+        if report_path and os.path.isfile(report_path):
+            try:
+                with open(report_path, encoding="utf-8") as f:
+                    report = f.read()
+            except Exception:
+                report = None
+        # Cache only for a finished job, and never over a report the worker
+        # stored in the meantime.
+        if report is not None and done and job.get("report") is None:
+            job["report"] = report
+            job["report_path"] = report_path
 
     # report=None is otherwise overloaded: it means either "generate_report was
     # false" or "Stage 5 ran and the file read failed". outputs says what

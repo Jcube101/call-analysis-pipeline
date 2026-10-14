@@ -963,3 +963,101 @@ def test_reconnect_outputs_and_fallback_use_newest(client, tmp_path, old_age, ne
         assert body["report"].strip() == f"# {_NEW_REPORT}"
     finally:
         jobs.pop(job_id, None)
+
+
+# ---------------------------------------------------------------------------
+# No stale report while a new Stage 5 run is in flight
+# ---------------------------------------------------------------------------
+
+def _inflight_job(job_dir, status):
+    """Job dict as /report-from-json builds it: report None, no report_path."""
+    return {"status": status, "generate_report": True, "output_dir": job_dir,
+            "report": None, "message_queue": [], "files": {}}
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_reconnect_mid_run_returns_no_report(client, tmp_path, status):
+    job_id = f"midrun-{status}"
+    job_dir = _report_job_dir(tmp_path, job_id, [(_OLD_REPORT, 0)])
+    jobs[job_id] = _inflight_job(job_dir, status)
+    try:
+        resp = client.get(f"/reconnect/{job_id}")
+        assert resp.status_code == 202
+        assert resp.json()["report"] is None
+        assert jobs[job_id]["report"] is None
+        assert "report_path" not in jobs[job_id]
+    finally:
+        jobs.pop(job_id, None)
+
+
+def test_reconnect_finished_job_still_falls_back_and_caches(client, tmp_path):
+    job_id = "finished-fallback"
+    job_dir = _report_job_dir(tmp_path, job_id, [(_NEW_REPORT, 0)])
+    jobs[job_id] = _inflight_job(job_dir, "complete")
+    try:
+        body = client.get(f"/reconnect/{job_id}").json()
+        assert body["report"].strip() == f"# {_NEW_REPORT}"
+        assert jobs[job_id]["report"] == body["report"]
+        assert os.path.basename(jobs[job_id]["report_path"]) == _NEW_REPORT
+    finally:
+        jobs.pop(job_id, None)
+
+
+def test_reconnect_race_cannot_overwrite_new_report(client, tmp_path, monkeypatch):
+    """
+    The worker finishes while /reconnect is handling the request.
+
+    The patched _latest_report plays the worker: on its first call it stores
+    the new report and marks the job complete, exactly as
+    _run_report_from_json does (report first, then status). Before the fix,
+    /reconnect called it from its disk fallback and then cached the OLD
+    report over the new one.
+    """
+    import api
+    job_id = "race"
+    job_dir = _report_job_dir(tmp_path, job_id, [(_OLD_REPORT, 0)])
+    job = _inflight_job(job_dir, "running")
+    jobs[job_id] = job
+    new_text = "# freshly generated report\n"
+    real_latest = api._latest_report
+    fired = []
+
+    def worker_finishes_now(d):
+        if not fired:
+            fired.append(True)
+            job["report"] = new_text
+            job["report_path"] = os.path.join(job_dir, _NEW_REPORT)
+            job["status"] = "complete"
+        return real_latest(d)
+
+    monkeypatch.setattr(api, "_latest_report", worker_finishes_now)
+    try:
+        body = client.get(f"/reconnect/{job_id}").json()
+        assert fired, "the simulated worker never ran"
+        assert job["report"] == new_text
+        assert body["report"] in (None, new_text)
+    finally:
+        jobs.pop(job_id, None)
+
+
+def test_report_from_json_drops_prior_report_entry(client, tmp_path):
+    job_id = "rerun"
+    job_dir = _report_job_dir(tmp_path, job_id, [(_OLD_REPORT, 0)])
+    jobs[job_id] = {
+        "status": "complete", "output_dir": job_dir, "report": "# old\n",
+        "report_path": os.path.join(job_dir, _OLD_REPORT),
+        "files": {"json": os.path.join(job_dir, "input.json"),
+                  "report": os.path.join(job_dir, _OLD_REPORT)},
+        "transcript": [], "metadata": {},
+    }
+    try:
+        payload = json.dumps({"metadata": {"job_id": job_id}, "transcript": []})
+        resp = client.post("/report-from-json", files={"file": ("t.json", payload, "application/json")})
+        assert resp.json()["job_id"] == job_id
+        new_job = jobs[job_id]
+        assert "report" not in new_job["files"]
+        assert new_job["files"]["json"].endswith("input.json")
+        assert new_job["report"] is None
+        assert "report_path" not in new_job
+    finally:
+        jobs.pop(job_id, None)
