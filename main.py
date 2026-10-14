@@ -22,6 +22,7 @@ import time
 from collections import Counter
 
 from config import settings
+from models import ALLOWED_MODELS, DEFAULT_MODEL, resolve_model
 from stages import preprocess, diarize, transcribe, export, report
 
 # The pipeline prints characters that cp1252 cannot encode -- the arrow in
@@ -164,7 +165,14 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         dest="report",
-        help="Run Stage 5: generate an analysis report via the Gemini API (requires GEMINI_API_KEY)",
+        help="Run Stage 5: generate an analysis report via the Claude or Gemini API",
+    )
+    parser.add_argument(
+        "--report-model",
+        metavar="MODEL",
+        default=DEFAULT_MODEL,
+        dest="report_model",
+        help=f"Stage 5 model: {' | '.join(ALLOWED_MODELS)} (default: {DEFAULT_MODEL})",
     )
     return parser.parse_args()
 
@@ -202,6 +210,7 @@ def _load_json_transcript(json_path: str) -> tuple[list[dict], dict]:
 def main() -> None:
     _check_ffmpeg()
     args = _parse_args()
+    report_model = resolve_model(args.report_model)
 
     # Validate: need either --input or --from-json
     if not args.input and not args.from_json:
@@ -252,7 +261,7 @@ def main() -> None:
             )
 
         try:
-            settings.validate_for_report()
+            settings.validate_for_report(report_model)
         except EnvironmentError as e:
             print(f"\n[error] {e}")
             sys.exit(1)
@@ -283,8 +292,10 @@ def main() -> None:
                 num_speakers=len(speaker_counts),
                 audio_duration=audio_duration,
                 speaker_counts=dict(speaker_counts),
-                api_key=settings.gemini_api_key,
                 prompts_dir="prompts",
+                gemini_model=report_model,
+                gemini_api_key=settings.gemini_api_key,
+                anthropic_api_key=settings.anthropic_api_key,
             )
         except Exception as e:
             print(f"\n[error] Stage 5 (report) failed: {e}")
@@ -363,7 +374,7 @@ def main() -> None:
 
     if args.report:
         try:
-            settings.validate_for_report()
+            settings.validate_for_report(report_model)
         except EnvironmentError as e:
             print(f"\n[error] {e}")
             sys.exit(1)
@@ -466,8 +477,10 @@ def main() -> None:
                 num_speakers=len(speaker_counts),
                 audio_duration=audio_duration,
                 speaker_counts=dict(speaker_counts),
-                api_key=settings.gemini_api_key,
                 prompts_dir="prompts",
+                gemini_model=report_model,
+                gemini_api_key=settings.gemini_api_key,
+                anthropic_api_key=settings.anthropic_api_key,
             )
         except Exception as e:
             print(f"\n[error] Stage 5 (report) failed: {e}")
