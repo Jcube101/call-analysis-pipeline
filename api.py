@@ -88,20 +88,20 @@ ALLOWED_CONTEXTS = [
 ]
 
 
-def _select_analysis_model(analysis_model: Optional[str], gemini_model: Optional[str]) -> str:
+async def _select_analysis_model(request: Request, analysis_model: Optional[str]) -> str:
     """
-    Pick the Stage 5 model from the form fields.
+    Pick the Stage 5 model from the analysis_model form field.
 
-    analysis_model is the primary field. gemini_model is its deprecated alias
-    (renamed 2026-10-14) kept for frontends that have not migrated; it is only
-    read when analysis_model is absent. Legacy IDs and unknown values are
-    handled by resolve_model().
+    gemini_model was its alias until it was removed on 2026-10-14. A stale
+    client that still sends it is not rejected: the value is ignored (the
+    default applies unless analysis_model is also sent) and one log line is
+    printed. Legacy IDs and unknown values are handled by resolve_model().
     """
+    # FastAPI has already parsed the body; Starlette caches it, so this does not re-read.
+    if "gemini_model" in await request.form():
+        print("[models] Ignored removed field 'gemini_model'; send 'analysis_model'")
     if analysis_model:
         return resolve_model(analysis_model)
-    if gemini_model:
-        print("[models] Deprecated field 'gemini_model' used; send 'analysis_model'")
-        return resolve_model(gemini_model)
     return DEFAULT_MODEL
 
 
@@ -763,6 +763,7 @@ async def health():
 
 @app.post("/analyse")
 async def analyse(
+    request: Request,
     file: UploadFile = File(...),
     context: Optional[str] = Form(None),
     num_speakers: Optional[int] = Form(None),
@@ -774,7 +775,6 @@ async def analyse(
     skip_preprocess: bool = Form(False),
     whisper_model: Optional[str] = Form(None),
     analysis_model: Optional[str] = Form(None),
-    gemini_model: Optional[str] = Form(None),  # deprecated alias of analysis_model
     context_hints: str = Form(""),
 ):
     # Preflight before anything is written to disk or queued, so a broken
@@ -782,7 +782,7 @@ async def analyse(
     if not skip_preprocess:
         _check_ffmpeg()
 
-    analysis_model = _select_analysis_model(analysis_model, gemini_model)
+    analysis_model = await _select_analysis_model(request, analysis_model)
     if context is not None and context not in ALLOWED_CONTEXTS:
         context = "friend"
 
@@ -837,14 +837,14 @@ async def analyse(
 
 @app.post("/report-from-json")
 async def report_from_json(
+    request: Request,
     file: UploadFile = File(...),
     context: Optional[str] = Form(None),
     speaker_names: Optional[str] = Form(None),
     analysis_model: Optional[str] = Form(None),
-    gemini_model: Optional[str] = Form(None),  # deprecated alias of analysis_model
     context_hints: str = Form(""),
 ):
-    analysis_model = _select_analysis_model(analysis_model, gemini_model)
+    analysis_model = await _select_analysis_model(request, analysis_model)
     if context is not None and context not in ALLOWED_CONTEXTS:
         context = "friend"
 
@@ -922,15 +922,7 @@ async def status(job_id: str):
     job = get_or_recover_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    # Deprecated mirrors of analysis_model (top level and in params) so /status
-    # clients reading the pre-2026-10-14 key keep working. Not stored on the job.
-    body = dict(job)
-    if "analysis_model" in job:
-        body["gemini_model"] = job["analysis_model"]
-    params = job.get("params")
-    if isinstance(params, dict) and "analysis_model" in params:
-        body["params"] = {**params, "gemini_model": params["analysis_model"]}
-    return body
+    return job
 
 
 @app.get("/reconnect/{job_id}")

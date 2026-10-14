@@ -2,7 +2,7 @@
 Tests for api.py logic that does not require a running server.
 
 Functions under test: get_or_recover_job, the analysis_model form field
-(and its deprecated gemini_model alias), the model registry,
+(and the ignored, removed gemini_model field), the model registry,
 and the glob-based file discovery patterns used during recovery.
 
 Note: get_or_recover_job() builds its job_dir as
@@ -585,11 +585,16 @@ def test_report_from_json_starts_with_empty_message_queue(tmp_path, monkeypatch)
                 {"metadata": {"job_id": job_id}, "transcript": [{"text": "new"}]}
             ).encode()
 
+    class FakeRequest:
+        async def form(self):
+            return {}
+
     monkeypatch.setattr(api_mod.executor, "submit", lambda *a, **kw: None)
 
     try:
         # Called directly, so the Form(...) defaults must be supplied explicitly
         asyncio.run(api_mod.report_from_json(
+            request=FakeRequest(),
             file=FakeUpload(),
             context=None,
             speaker_names=None,
@@ -758,10 +763,10 @@ def test_reconnect_body_unchanged_between_202_and_200():
 
 
 # ---------------------------------------------------------------------------
-# analysis_model form field and its deprecated gemini_model alias
+# analysis_model form field (the gemini_model alias was removed 2026-10-14)
 # ---------------------------------------------------------------------------
 
-_DEPRECATION_LINE = "[models] Deprecated field 'gemini_model' used; send 'analysis_model'"
+_IGNORED_LINE = "[models] Ignored removed field 'gemini_model'; send 'analysis_model'"
 
 
 @pytest.fixture
@@ -782,38 +787,64 @@ def _post_report(client, **fields):
     return job_id, jobs[job_id]
 
 
+def _post_analyse(client, **fields):
+    files = {"file": ("call.mp3", b"not really audio", "audio/mpeg")}
+    resp = client.post("/analyse", data={"skip_preprocess": "true", **fields}, files=files)
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+    return job_id, jobs[job_id]
+
+
 def test_analysis_model_alone_is_used(client, capsys):
     _, job = _post_report(client, analysis_model="claude-sonnet-5-5")
     assert job["analysis_model"] == "claude-sonnet-5-5"
     assert job["params"]["analysis_model"] == "claude-sonnet-5-5"
     assert "gemini_model" not in job
-    assert "Deprecated field" not in capsys.readouterr().out
+    assert "gemini_model" not in capsys.readouterr().out
 
 
-def test_gemini_model_alone_is_used_with_deprecation_line(client, capsys):
+def test_ignored_gemini_model_falls_back_to_default(client, capsys):
+    from models import DEFAULT_MODEL
     _, job = _post_report(client, gemini_model="gemini-3.8-flash")
-    assert job["analysis_model"] == "gemini-3.8-flash"
-    assert _DEPRECATION_LINE in capsys.readouterr().out
+    assert job["analysis_model"] == DEFAULT_MODEL
+    assert "gemini_model" not in job
+    assert capsys.readouterr().out.count(_IGNORED_LINE) == 1
 
 
-def test_both_fields_sent_analysis_model_wins(client, capsys):
-    _, job = _post_report(client, analysis_model="claude-haiku-5-5", gemini_model="gemini-4-argon")
-    assert job["analysis_model"] == "claude-haiku-5-5"
-    assert "Deprecated field" not in capsys.readouterr().out
+def test_ignored_gemini_model_on_analyse_falls_back_to_default(client, capsys):
+    from models import DEFAULT_MODEL
+    _, job = _post_analyse(client, gemini_model="gemini-4-argon")
+    assert job["analysis_model"] == DEFAULT_MODEL
+    assert job["params"]["analysis_model"] == DEFAULT_MODEL
+    assert capsys.readouterr().out.count(_IGNORED_LINE) == 1
 
 
-def test_neither_field_uses_default(client):
+def test_both_fields_sent_gemini_model_ignored(client, capsys):
+    _, job = _post_report(client, analysis_model="claude-sonnet-5-5", gemini_model="gemini-4-argon")
+    assert job["analysis_model"] == "claude-sonnet-5-5"
+    assert capsys.readouterr().out.count(_IGNORED_LINE) == 1
+
+
+def test_ignored_gemini_model_legacy_id_is_not_remapped(client, capsys):
+    from models import DEFAULT_MODEL
+    _, job = _post_report(client, gemini_model="claude-sonnet-4-6")
+    assert job["analysis_model"] == DEFAULT_MODEL
+    out = capsys.readouterr().out
+    assert _IGNORED_LINE in out
+    assert "Legacy model ID" not in out
+
+
+def test_neither_field_uses_default(client, capsys):
     from models import DEFAULT_MODEL
     _, job = _post_report(client)
     assert job["analysis_model"] == DEFAULT_MODEL
+    assert "gemini_model" not in capsys.readouterr().out
 
 
-def test_legacy_id_via_deprecated_field_is_remapped(client, capsys):
-    _, job = _post_report(client, gemini_model="claude-haiku-4-5-20251001")
+def test_legacy_id_via_analysis_model_is_remapped(client, capsys):
+    _, job = _post_report(client, analysis_model="claude-haiku-4-5-20251001")
     assert job["analysis_model"] == "claude-haiku-5-5"
-    out = capsys.readouterr().out
-    assert _DEPRECATION_LINE in out
-    assert "Legacy model ID 'claude-haiku-4-5-20251001'" in out
+    assert "Legacy model ID 'claude-haiku-4-5-20251001'" in capsys.readouterr().out
 
 
 def test_unknown_analysis_model_falls_back_to_default(client):
@@ -823,21 +854,22 @@ def test_unknown_analysis_model_falls_back_to_default(client):
 
 
 def test_analyse_endpoint_accepts_analysis_model(client):
-    files = {"file": ("call.mp3", b"not really audio", "audio/mpeg")}
-    resp = client.post("/analyse", data={"analysis_model": "gemini-4-argon", "skip_preprocess": "true"},
-                       files=files)
-    assert resp.status_code == 200
-    job = jobs[resp.json()["job_id"]]
+    _, job = _post_analyse(client, analysis_model="gemini-4-argon")
     assert job["analysis_model"] == "gemini-4-argon"
     assert job["params"]["analysis_model"] == "gemini-4-argon"
 
 
-def test_status_keeps_deprecated_gemini_model_mirror(client):
-    job_id, job = _post_report(client, analysis_model="claude-sonnet-5-5")
+def test_gemini_model_not_in_openapi_schema(client):
+    schema = json.dumps(client.get("/openapi.json").json())
+    assert "gemini_model" not in schema
+
+
+def test_status_has_no_gemini_model_mirror(client):
+    job_id, _ = _post_report(client, analysis_model="claude-sonnet-5-5")
     body = client.get(f"/status/{job_id}").json()
-    assert body["analysis_model"] == body["gemini_model"] == "claude-sonnet-5-5"
-    assert body["params"]["gemini_model"] == "claude-sonnet-5-5"
-    assert "gemini_model" not in job, "mirror must not be written back to the job"
+    assert body["analysis_model"] == "claude-sonnet-5-5"
+    assert "gemini_model" not in body
+    assert "gemini_model" not in body["params"]
 
 
 # ---------------------------------------------------------------------------

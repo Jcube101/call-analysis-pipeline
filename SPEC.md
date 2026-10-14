@@ -328,7 +328,7 @@ pip install -r requirements.txt
 
 Download endpoints serve files directly from disk without checking job status — files are returned as soon as they exist.
 
-**Model field:** both POST endpoints take `analysis_model` (allowed values in `models.py`; legacy IDs remapped, unknown values fall back to the default). `gemini_model` is a deprecated alias (renamed 2026-10-14): it is read only when `analysis_model` is absent, and prints `[models] Deprecated field 'gemini_model' used; send 'analysis_model'`. If both are sent, `analysis_model` wins. `GET /status` also echoes a deprecated `gemini_model` mirror of `analysis_model`.
+**Model field:** both POST endpoints take `analysis_model` (allowed values in `models.py`; legacy IDs remapped, unknown values fall back to the default). The old `gemini_model` alias was removed on 2026-10-14: if a request still sends it, the value is ignored (default model unless `analysis_model` is also sent), the request still succeeds, and the server prints `[models] Ignored removed field 'gemini_model'; send 'analysis_model'`. `GET /status` no longer echoes a `gemini_model` mirror.
 
 ### Full pipeline flow (frontend)
 

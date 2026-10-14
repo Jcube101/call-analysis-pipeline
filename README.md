@@ -127,7 +127,7 @@ Edit `.env` and fill in:
 - `ANTHROPIC_API_KEY` — required for `--report` with Claude models (default). Get a key at https://console.anthropic.com/settings/keys
 - `GEMINI_API_KEY` — required for `--report` with Gemini models. Get a free key at https://aistudio.google.com/app/apikey
 - Supported models (selectable via the web UI, the `analysis_model` API parameter, or `--report-model` on the CLI): `claude-haiku-5-5` (default, fast and cost-effective), `claude-sonnet-5-5` (deeper analysis), `gemini-3.8-flash` (reliable for long transcripts), `gemini-4-argon` (deeper analysis). The list lives in `models.py`. Old IDs from earlier versions are remapped to their successors.
-- **Deprecated (2026-10-14):** the API field `gemini_model` was renamed to `analysis_model`, since it carries Claude and Gemini models. `gemini_model` still works as an alias and prints a deprecation line; if both are sent, `analysis_model` wins.
+- **Removed (2026-10-14):** the old API field `gemini_model` (renamed `analysis_model`, since it carries Claude and Gemini models) is no longer read. A request that still sends it is not rejected: the value is ignored, the default model is used unless `analysis_model` is also sent, and the server prints `[models] Ignored removed field 'gemini_model'; send 'analysis_model'`.
 - `CONVERSATION_CONTEXT` — `friend`, `work`, `work_interview`, `user_interview`, `public_interview`, or `date`
 - `NUM_SPEAKERS` — integer (e.g. `2`) or leave blank for auto-detection
 - `TRANSCRIPTION_MODE` — `accurate` (default) or `fast`
