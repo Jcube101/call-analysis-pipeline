@@ -56,6 +56,7 @@ stages/
   transcribe.py  — Stage 3: faster-whisper transcription (runs locally, GPU-accelerated)
   export.py      — Stage 4: writes timestamped .txt and .json output
   report.py      — Stage 5: Claude/Gemini API analysis report (--report flag only)
+  progress.py    — optional progress(phase, percent, message) reporting for Stages 1 and 3
 prompts/
   friend.md           — analysis prompt for friend conversations (user-editable)
   work.md             — analysis prompt for work conversations (user-editable)
@@ -288,6 +289,8 @@ The `complete` WebSocket message shape:
 {"type": "complete", "transcript": [...], "report": "...", "metadata": {...}}
 ```
 
+`progress` messages have four fields: `{"type": "progress", "stage", "stage_name", "message"}`. Within Stages 1–3, sub-progress messages add `phase` (string) and `percent` (integer, or `null` for a phase that does not count its work). Phases: Stage 1 `decode`, `noise reduction` (counted), `normalization`; Stage 2 `model load`, `segmentation` (counted), `speaker counting`, `embeddings` (counted), `clustering`, `re-identification`; Stage 3 `model load`, `transcription` (counted). A counted phase starts at `0` and updates at most every 5% and every 10 s; `100` is never sent — a phase ends when the next message arrives. Stages 4–5 send only the four-field shape. The stage's `run(progress=None)` callback produces these; `api.py` queues each message on the pipeline thread and sends it from the single `_progress_sender` thread, skipping the live send once a newer message is queued, so a slow socket cannot stall a stage. `main.py` passes no callback.
+
 ### Threading model
 
 All pipeline jobs run in a `ThreadPoolExecutor(max_workers=1)`. This serialises jobs since pyannote + Whisper together consume the full 4 GB VRAM budget. The `asyncio` event loop is captured at startup in `_loop`; background threads push WebSocket messages via `asyncio.run_coroutine_threadsafe(...).result(timeout=5)`.
@@ -338,6 +341,7 @@ Unit tests live in `tests/`:
 - `tests/test_export.py` — timestamp formatting, JSON schema, speaker name mapping, unique file naming, `write_relabelled()`, secret field leak checks
 - `tests/test_api.py` — `get_or_recover_job()` in-memory and disk recovery, glob filter patterns, job state structure, `ALLOWED_MODELS`, the `analysis_model` field via TestClient (legacy remap, unknown fallback), the removed `gemini_model` field being ignored with one log line on both POST endpoints (alone, both sent, legacy ID not remapped), its absence from OpenAPI and `/status`, API key leak prevention (job dict, /reconnect, WebSocket, SDK exceptions, .gitignore)
 - `tests/test_report.py` — prompt loading from file and fallback defaults, transcript chunking, model fallback on 503, Claude thinking-block handling, max-token truncation guards, Claude/Gemini API key validation, report output leak checks
+- `tests/test_progress.py` — the Stage 1/3 progress throttle (`stages/progress.py`): phase messages, 5% / 10 s throttling, rounding, swallowed callback errors
 - `tests/test_models.py` — model registry shape, legacy ID remapping (with log line), unknown-value fallback, provider lookup
 
 Run with: `pytest tests/ -v`

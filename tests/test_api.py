@@ -1096,7 +1096,7 @@ def test_report_from_json_drops_prior_report_entry(client, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Stage 2 sub-progress (diarize.run(progress=...) -> WebSocket)
+# Stage 1-3 sub-progress (<stage>.run(progress=...) -> WebSocket)
 # ---------------------------------------------------------------------------
 
 import api as _api
@@ -1119,11 +1119,11 @@ def test_push_progress_shape_is_unchanged(monkeypatch):
         jobs.pop("prog-shape", None)
 
 
-def test_diarize_progress_adds_phase_and_percent_only(monkeypatch):
+def test_stage_progress_adds_phase_and_percent_only(monkeypatch):
     job = _progress_job("prog-sub")
     monkeypatch.setattr(_api, "_send_ws", lambda job_id, payload: None)
     try:
-        cb = _api._diarize_progress("prog-sub")
+        cb = _api._stage_progress("prog-sub", 2, "Diarize", "Speaker diarization")
         cb("segmentation", 45, "segmentation 45% (12/27 chunks), 0:40 elapsed, ~0:49 left")
         cb("clustering", None, "Phase: clustering")
         first, second = job["message_queue"]
@@ -1139,7 +1139,7 @@ def test_diarize_progress_adds_phase_and_percent_only(monkeypatch):
         jobs.pop("prog-sub", None)
 
 
-def test_diarize_progress_does_not_block_on_slow_socket(monkeypatch):
+def test_stage_progress_does_not_block_on_slow_socket(monkeypatch):
     _progress_job("prog-slow")
     sent = []
 
@@ -1149,7 +1149,7 @@ def test_diarize_progress_does_not_block_on_slow_socket(monkeypatch):
 
     monkeypatch.setattr(_api, "_send_ws", slow_send)
     try:
-        cb = _api._diarize_progress("prog-slow")
+        cb = _api._stage_progress("prog-slow", 2, "Diarize", "Speaker diarization")
         t0 = time.monotonic()
         cb("segmentation", 0, "Phase: segmentation")
         cb("segmentation", 10, "segmentation 10%")
@@ -1177,7 +1177,7 @@ def test_superseded_progress_is_not_sent(monkeypatch):
         jobs.pop("prog-stale", None)
 
 
-def test_diarize_progress_swallows_errors(monkeypatch):
+def test_stage_progress_swallows_errors(monkeypatch):
     _progress_job("prog-err")
 
     class Broken:
@@ -1186,8 +1186,8 @@ def test_diarize_progress_swallows_errors(monkeypatch):
 
     monkeypatch.setattr(_api, "_progress_sender", Broken())
     try:
-        _api._diarize_progress("prog-err")("embeddings", 5, "x")  # must not raise
-        _api._diarize_progress("no-such-job")("embeddings", 5, "x")
+        _api._stage_progress("prog-err", 2, "Diarize", "Speaker diarization")("embeddings", 5, "x")  # must not raise
+        _api._stage_progress("no-such-job", 2, "Diarize", "Speaker diarization")("embeddings", 5, "x")
     finally:
         jobs.pop("prog-err", None)
 
@@ -1197,3 +1197,20 @@ def test_send_if_latest_swallows_send_errors(monkeypatch):
         raise RuntimeError("socket gone")
     monkeypatch.setattr(_api, "_send_ws", boom)
     _api._send_if_latest("no-such-job", {"type": "progress"})  # must not raise
+
+
+@pytest.mark.parametrize("stage,stage_name,label,phase", [
+    (1, "Preprocess", "Preprocessing", "noise reduction"),
+    (3, "Transcribe", "Transcription", "transcription"),
+])
+def test_stage_progress_shape_for_stages_1_and_3(monkeypatch, stage, stage_name, label, phase):
+    job = _progress_job("prog-13")
+    monkeypatch.setattr(_api, "_send_ws", lambda job_id, payload: None)
+    try:
+        _api._stage_progress("prog-13", stage, stage_name, label)(phase, 40, f"{phase} 40% (4/10 x)")
+        assert job["message_queue"] == [{
+            "type": "progress", "stage": stage, "stage_name": stage_name,
+            "message": f"{label} — {phase} 40% (4/10 x)", "phase": phase, "percent": 40,
+        }]
+    finally:
+        jobs.pop("prog-13", None)

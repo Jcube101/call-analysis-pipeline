@@ -130,8 +130,8 @@ threading.excepthook = _handle_thread_exception
 jobs: dict[str, dict] = {}
 connections: dict[str, WebSocket] = {}
 executor = ThreadPoolExecutor(max_workers=1)
-# Sends Stage 2 sub-progress to the socket so a slow or dead client can never
-# stall the diarization thread. One worker keeps sends in order.
+# Sends Stage 1-3 sub-progress to the socket so a slow or dead client can never
+# stall the pipeline thread. One worker keeps sends in order.
 _progress_sender = ThreadPoolExecutor(max_workers=1, thread_name_prefix="progress-send")
 _loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -401,7 +401,7 @@ def _progress_payload(
 ) -> dict:
     """Record progress on the job and build the message.
 
-    Ordinary stage messages keep the original four-field shape. Stage 2
+    Ordinary stage messages keep the original four-field shape. Stage 1-3
     sub-progress (sub_progress=True) adds "phase" and "percent"; percent is
     null for phases that report no counts.
     """
@@ -440,17 +440,17 @@ def _send_if_latest(job_id: str, payload: dict) -> None:
         pass
 
 
-def _diarize_progress(job_id: str):
-    """Callback for diarize.run(progress=...). Never blocks, never raises.
+def _stage_progress(job_id: str, stage: int, stage_name: str, label: str):
+    """Callback for a stage's run(progress=...). Never blocks, never raises.
 
-    Queueing is a list append on the diarization thread; the socket send runs
-    on _progress_sender. diarize's own throttle (5 % / 10 s) and phase changes
-    bound how often this is called.
+    Queueing is a list append on the pipeline thread; the socket send runs on
+    _progress_sender. The stage's own throttle (5 % / 10 s) and its phase
+    changes bound how often this is called.
     """
     def callback(phase: str, percent: Optional[int], message: str) -> None:
         try:
             payload = _progress_payload(
-                job_id, 2, "Diarize", f"Speaker diarization — {message}",
+                job_id, stage, stage_name, f"{label} — {message}",
                 phase=phase, percent=percent, sub_progress=True,
             )
             job = jobs.get(job_id)
@@ -532,7 +532,11 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
         if params.get("skip_preprocess"):
             clean_wav = input_path
         else:
-            clean_wav = preprocess.run(input_path=input_path, output_dir=output_dir)
+            clean_wav = preprocess.run(
+                input_path=input_path,
+                output_dir=output_dir,
+                progress=_stage_progress(job_id, 1, "Preprocess", "Preprocessing"),
+            )
         _push_progress(job_id, 1, "Preprocess", f"Done → {os.path.basename(clean_wav)}")
 
         # Stage 2 — Diarization
@@ -541,7 +545,7 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
             clean_wav_path=clean_wav,
             output_dir=output_dir,
             num_speakers=settings.num_speakers,
-            progress=_diarize_progress(job_id),
+            progress=_stage_progress(job_id, 2, "Diarize", "Speaker diarization"),
         )
         if settings.speaker_names:
             segments = _apply_speaker_names(segments, settings.speaker_names)
@@ -567,6 +571,7 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
             model_size=settings.whisper_model,
             mode=settings.transcription_mode,
             word_timestamps=settings.word_timestamps,
+            progress=_stage_progress(job_id, 3, "Transcribe", "Transcription"),
         )
         _push_progress(job_id, 3, "Transcribe", f"Done — {len(transcribed_segments)} segment(s)")
 

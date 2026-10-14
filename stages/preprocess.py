@@ -20,10 +20,14 @@ import math
 import os
 import shutil
 import subprocess
+from typing import Optional
+
 import numpy as np
 import noisereduce as nr
 import soundfile as sf
 from tqdm import tqdm
+
+from stages.progress import PhaseProgress, ProgressCallback
 
 # Mono 16 kHz is what pyannote (Stage 2) and Whisper (Stage 3) both expect.
 TARGET_SAMPLE_RATE = 16_000
@@ -88,7 +92,10 @@ def _block_peak(block: np.ndarray) -> int:
     return int(np.abs(block.astype(np.int32)).max())
 
 
-def _stream_reduce_noise(reader: sf.SoundFile, sr: int, writer: sf.SoundFile) -> int:
+def _stream_reduce_noise(
+    reader: sf.SoundFile, sr: int, writer: sf.SoundFile,
+    progress: Optional[PhaseProgress] = None,
+) -> int:
     """Apply noisereduce in overlapping chunks, streaming from `reader` to `writer`.
 
     noisereduce internally computes a full STFT of its input, which for a 90-minute
@@ -109,6 +116,8 @@ def _stream_reduce_noise(reader: sf.SoundFile, sr: int, writer: sf.SoundFile) ->
 
     Returns the peak absolute int16 sample written, which the caller needs in
     order to normalize without a second pass over memory.
+
+    `progress`, if given, is told how many chunks are done before each chunk.
     """
     CHUNK_SEC = 60
     OVERLAP_SEC = 0.5
@@ -133,6 +142,8 @@ def _stream_reduce_noise(reader: sf.SoundFile, sr: int, writer: sf.SoundFile) ->
     peak = 0
 
     for i in tqdm(range(n_chunks), desc="  Noise reduction", unit="chunk"):
+        if progress is not None:
+            progress.update(i, n_chunks, "chunks")
         pos = i * chunk_size
         read_start = max(0, pos - overlap_size)
         read_end = min(total, pos + chunk_size + overlap_size)
@@ -181,13 +192,16 @@ def _normalize_in_place(path: str, peak: int, block_frames: int = 1 << 20) -> No
             pos += len(block)
 
 
-def run(input_path: str, output_dir: str) -> str:
+def run(input_path: str, output_dir: str, progress: Optional[ProgressCallback] = None) -> str:
     """
     Run Stage 1.
 
     Args:
         input_path: Path to the source audio file (e.g. input/call.mp3).
         output_dir:  Directory where the clean WAV will be written.
+        progress:    Optional callback(phase, percent_or_None, message). See
+                     stages/progress.py. Phases: decode, noise reduction,
+                     normalization. Errors in it are ignored.
 
     Returns:
         Path to the cleaned WAV file.
@@ -201,7 +215,9 @@ def run(input_path: str, output_dir: str) -> str:
     # "*_clean.wav" glob that api.py uses to serve the download endpoint.
     decoded_path = os.path.join(output_dir, f"{base_name}_decoded.tmp.wav")
 
+    tracker = PhaseProgress(progress, "[Stage 1]")
     try:
+        tracker.begin("decode")
         _decode_to_wav(input_path, decoded_path)
 
         # --- Noise reduction, streamed from the decoded WAV into the output WAV ---
@@ -209,15 +225,17 @@ def run(input_path: str, output_dir: str) -> str:
             sr = reader.samplerate
             print(f"[Stage 1] Duration: {reader.frames / sr:.1f}s  |  Sample rate: {sr} Hz")
             print("[Stage 1] Applying noise reduction...")
+            tracker.begin("noise reduction", counted=True)
             with sf.SoundFile(
                 output_path, mode="w", samplerate=sr,
                 channels=TARGET_CHANNELS, subtype="PCM_16",
             ) as writer:
-                peak = _stream_reduce_noise(reader, sr, writer)
+                peak = _stream_reduce_noise(reader, sr, writer, tracker)
         gc.collect()
 
         # --- Loudness normalization (second streaming pass over the output) ---
         print("[Stage 1] Normalizing loudness...")
+        tracker.begin("normalization")
         _normalize_in_place(output_path, peak)
         print(f"[Stage 1] Clean audio saved to: {output_path}")
     finally:

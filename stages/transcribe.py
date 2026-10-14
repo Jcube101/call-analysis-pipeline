@@ -36,6 +36,7 @@ from faster_whisper import WhisperModel
 from tqdm import tqdm
 
 from config import settings
+from stages.progress import PhaseProgress, ProgressCallback
 
 # Module-level reference keeps the model alive until process exit.
 # ctranslate2's CUDA cleanup calls exit() when triggered mid-process on
@@ -197,6 +198,7 @@ def _transcribe_accurate(
     audio: _WavReader,
     segments: list[dict],
     word_timestamps: bool = False,
+    progress: Optional[PhaseProgress] = None,
 ) -> list[dict]:
     """
     One model.transcribe() call per diarization segment.
@@ -204,7 +206,9 @@ def _transcribe_accurate(
     """
     transcribed: list[dict] = []
 
-    for seg in tqdm(segments, desc="Transcribing (accurate)", unit="seg"):
+    for i, seg in enumerate(tqdm(segments, desc="Transcribing (accurate)", unit="seg")):
+        if progress is not None:
+            progress.update(i, len(segments), "segments")
         start_frame, end_frame, chunk_ms = audio.bounds(seg["start"], seg["end"])
 
         if chunk_ms < 500:
@@ -240,6 +244,7 @@ def _transcribe_fast(
     audio: _WavReader,
     segments: list[dict],
     word_timestamps: bool = False,
+    progress: Optional[PhaseProgress] = None,
 ) -> list[dict]:
     """
     Merge same-speaker diarization segments into turns, then transcribe
@@ -252,7 +257,9 @@ def _transcribe_fast(
     turns = _merge_turns(segments, gap_s=1.0)
     transcribed: list[dict] = []
 
-    for turn in tqdm(turns, desc="Transcribing (fast)", unit="turn"):
+    for i, turn in enumerate(tqdm(turns, desc="Transcribing (fast)", unit="turn")):
+        if progress is not None:
+            progress.update(i, len(turns), "turns")
         start_frame, end_frame, chunk_ms = audio.bounds(turn["start"], turn["end"])
 
         if chunk_ms < 500:
@@ -289,6 +296,7 @@ def run(
     model_size: Optional[str] = None,
     mode: str = "accurate",
     word_timestamps: bool = False,
+    progress: Optional[ProgressCallback] = None,
 ) -> list[dict]:
     """
     Run Stage 3.
@@ -299,6 +307,11 @@ def run(
         model_size:      Whisper model size override; falls back to settings.whisper_model.
         mode:            "accurate" (default) or "fast".
         word_timestamps: When True, include per-word timestamps in each segment.
+        progress:        Optional callback(phase, percent_or_None, message). See
+                         stages/progress.py. Phases: model load, transcription.
+                         Percent counts segments (accurate) or turns (fast),
+                         including ones skipped as too short. Errors in it are
+                         ignored.
 
     Returns:
         The segment list with "text", "confidence", and optionally "words" added.
@@ -306,6 +319,8 @@ def run(
     import torch
 
     model_name = model_size or settings.whisper_model
+    tracker = PhaseProgress(progress, "[Stage 3]")
+    tracker.begin("model load")
 
     if torch.cuda.is_available():
         device, compute_type = "cuda", "int8_float16"
@@ -320,11 +335,16 @@ def run(
     print(f"[Stage 3] Model loaded. Running in '{mode}' mode{wt_note} on {len(segments)} segment(s)...")
 
     # The clean WAV stays on disk; segments are read from it on demand.
+    tracker.begin("transcription", counted=True)
     with _WavReader(clean_wav_path) as audio:
         if mode == "accurate":
-            transcribed = _transcribe_accurate(model, audio, segments, word_timestamps=word_timestamps)
+            transcribed = _transcribe_accurate(
+                model, audio, segments, word_timestamps=word_timestamps, progress=tracker,
+            )
         else:
-            transcribed = _transcribe_fast(model, audio, segments, word_timestamps=word_timestamps)
+            transcribed = _transcribe_fast(
+                model, audio, segments, word_timestamps=word_timestamps, progress=tracker,
+            )
 
     print(f"[Stage 3] Transcription complete. {len(transcribed)} segment(s) produced.")
     return transcribed
