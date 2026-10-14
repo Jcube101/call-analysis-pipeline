@@ -228,6 +228,8 @@ pip install -r requirements.txt
 uvicorn api:app --host 0.0.0.0 --port 8010
 ```
 
+**Ports:** 8010 is this project's only port (registered in `dev-meta/PORTS.md`). Every other port in that registry belongs to another project. Never bind one of them for testing, even if it looks free locally. For tests, use FastAPI's in-process `TestClient` (as `tests/test_api.py` does), or start a throwaway server on an OS-assigned ephemeral port: `uvicorn api:app --host 127.0.0.1 --port 0`, then read the actual port from the `Uvicorn running on http://127.0.0.1:<port>` log line. Leave 8010 to the live server.
+
 Requires `fastapi`, `uvicorn`, `python-multipart` (not in `requirements.txt` — install separately or add them).
 
 ### Endpoints
