@@ -179,6 +179,30 @@ def _fmt_elapsed(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
+def vram_status() -> Optional[str]:
+    """One-line VRAM summary, or None without CUDA.
+
+    mem_get_info() is device-wide, so it also sees memory this process holds
+    outside torch's allocator -- ctranslate2 (Whisper), the CUDA context -- and
+    other processes' use. memory_allocated() is live torch tensors only, and
+    memory_reserved() adds blocks torch's caching allocator is holding on to.
+    """
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return None
+        free, total = torch.cuda.mem_get_info()
+        allocated = torch.cuda.memory_allocated()
+        reserved = torch.cuda.memory_reserved()
+    except Exception:
+        return None
+    gb = 2 ** 30
+    return (
+        f"free {free / gb:.2f} of {total / gb:.2f} GB, "
+        f"torch allocated {allocated / gb:.2f} GB, reserved {reserved / gb:.2f} GB"
+    )
+
+
 class _PhaseMonitor:
     """pyannote hook that makes Stage 2 observable in the server log.
 
@@ -222,6 +246,9 @@ class _PhaseMonitor:
         self._last_fraction = 0.0
         if announce:
             print(f"[Stage 2] Phase: {phase}", flush=True)
+        vram = vram_status()
+        if vram:
+            print(f"[Stage 2] VRAM at {phase} start: {vram}", flush=True)
 
     def end(self) -> None:
         self._close(time.monotonic())
