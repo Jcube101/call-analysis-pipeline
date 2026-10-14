@@ -92,6 +92,8 @@ pip install -r requirements.txt
 
 **Key insight:** The install order matters because pip doesn't re-evaluate already-satisfied constraints when processing later packages. If torch is installed first, subsequent packages won't upgrade it.
 
+**Current pin:** the order still applies, but the torch build is now `2.5.1+cu124` from the cu124 index (see Learning #22).
+
 ---
 
 ## 4. soundfile is the right way to load audio for pyannote
@@ -112,11 +114,13 @@ waveform = torch.from_numpy(data).float()
 
 pyannote expects waveform shape `(channels, time)` — this is the opposite of numpy's default `(time, channels)`.
 
+**Superseded for pyannote input:** Stage 2 now passes the clean WAV's file path, not a waveform (see Learning #2). `soundfile` is still how the MFCC re-identification pass reads each segment from disk.
+
 ---
 
 ## 5. M4A files work fine — ffmpeg handles the format transparently
 
-Both `pydub.AudioSegment.from_file()` (Stage 1) and the ffmpeg preflight check in `main.py` handle M4A without any special casing. The pipeline accepts any ffmpeg-supported format; the README and spec previously said "MP3" but this was misleading.
+Both Stage 1's streaming ffmpeg decode (originally `pydub.AudioSegment.from_file()`) and the ffmpeg preflight check in `main.py` handle M4A without any special casing. The pipeline accepts any ffmpeg-supported format; the README and spec previously said "MP3" but this was misleading.
 
 **Tested formats:** MP3, M4A (iPhone voice memos, WhatsApp audio).
 
@@ -242,6 +246,8 @@ The `sleep(3)` gives the CUDA driver time to process the deallocation before the
 
 **Fix:** Load audio with `soundfile.read()` instead of any torchaudio API. `soundfile` is pure Python / libsndfile and has no torch version coupling. See Learning #4.
 
+**Correction:** the pipeline's own code does not call torchaudio, but pyannote 3.4.0 reads audio through it (soundfile backend), and `torchaudio==2.5.1+cu124` is installed alongside torch. Install the two from the same index.
+
 ### numpy 2.x breaks pyannote on Windows pip installs
 
 See Learning #3. On Windows, `pip install -r requirements.txt` without pre-installing torch tends to resolve to the latest torch, which triggers a numpy 2.x upgrade that breaks pyannote. The explicit install order (torch first, then numpy pin, then requirements) is especially important on Windows where pip caching behaviour differs from Linux.
@@ -257,7 +263,7 @@ See Learning #3. On Windows, `pip install -r requirements.txt` without pre-insta
 from google import genai
 
 client = genai.Client(api_key=api_key)
-response = client.models.generate_content(model="gemini-3-flash-preview", contents=prompt)
+response = client.models.generate_content(model="gemini-3.8-flash", contents=prompt)
 return response.text
 ```
 
@@ -484,6 +490,8 @@ Unit tests for `config.py`, `stages/export.py`, `api.py` helpers, and `stages/re
 
 Do **not** unit-test `stages/preprocess.py`, `stages/diarize.py`, or `stages/transcribe.py`. Mocking torch/pyannote/whisper is complex, fragile, and the tests would not reflect real behaviour. Manual integration testing on real audio files is more valuable for these stages.
 
+**One exception (2026-10-14):** `tests/test_diarize_reid.py` tests only Stage 2's MFCC + KMeans re-identification pass and the outcome it reports. pyannote, torch and huggingface_hub are stubbed; librosa and scikit-learn run for real on a few seconds of generated tones. It exists because a silent re-identification failure degraded a real job's labels, and the fallback paths are only reachable by forcing them. Do not extend it to the pyannote pass.
+
 ### Stub heavy imports at the sys.modules level for api.py tests
 
 `api.py` imports all pipeline stages at module level. In tests, stub only the heavy stages (`diarize`, `preprocess`, `transcribe`) before importing `api`:
@@ -507,9 +515,9 @@ Never write to the real `output/` directory in tests. Use pytest's `tmp_path` fi
 
 Patch `stages.report._call_gemini` / `stages.report._call_claude` or the `_model` variants rather than the SDK itself. This keeps tests stable against SDK version changes. When testing `report.run()`, pass `analysis_model="gemini-3.8-flash"` explicitly to test the Gemini path (default is now Claude).
 
-### FastAPI TestClient for future automated API tests
+### FastAPI TestClient for API tests
 
-`from fastapi.testclient import TestClient` allows calling all API endpoints without starting a real server. Useful for automated regression tests against the full endpoint surface. No torch/pyannote required as long as the pipeline stages are stubbed.
+`from fastapi.testclient import TestClient` allows calling API endpoints without starting a real server. `tests/test_api.py` uses it for both POST endpoints, `/status`, `/reconnect` and OpenAPI. No torch/pyannote required as long as the pipeline stages are stubbed.
 
 ### API key leak prevention tests
 
@@ -615,7 +623,7 @@ The Gemini IDs were confirmed from `client.models.list()` with our key (`gemini-
 
 ### Keep model IDs in one registry
 
-`models.py` holds the IDs, labels, providers, default, per-provider fallbacks and `LEGACY_ALIASES`. Before it, the same strings lived in `api.py` (five places), `config.py`, `stages/report.py` and the tests. Saved frontend state (`localStorage["cap_gemini_model"]`) keeps sending old IDs, so `resolve_model()` remaps them to their successor with a `[models]` log line instead of silently swapping in the default.
+`models.py` holds the IDs, labels, providers, default, per-provider fallbacks and `LEGACY_ALIASES`. Before it, the same strings lived in `api.py` (five places), `config.py`, `stages/report.py` and the tests. Saved frontend state (`localStorage["cap_gemini_model"]`, since migrated to `"cap_analysis_model"`) can still hold old IDs, so `resolve_model()` remaps them to their successor with a `[models]` log line instead of silently swapping in the default.
 
 ### Claude 5.5 can return thinking blocks
 
@@ -631,7 +639,9 @@ On the report prompt, `claude-haiku-5-5` returned `[thinking, text]`; a trivial 
 
 ### Renaming a public field: alias, don't break (2026-10-14)
 
-`gemini_model` carried Claude models too, so it was renamed `analysis_model`. The deployed frontend still sends `gemini_model`, so both form fields are declared as `Optional[str] = Form(None)` and resolved in `_select_analysis_model()`: the new field wins, the old one is read only when the new one is absent and prints a deprecation line. Declaring the old field with a non-None default would make "not sent" indistinguishable from "sent the default", and the precedence rule would break.
+`gemini_model` carried Claude models too, so it was renamed `analysis_model`. At the time the deployed frontend still sent `gemini_model`, so for a transition period both form fields were declared as `Optional[str] = Form(None)` and resolved in `_select_analysis_model()`: the new field won, and the old one was read only when the new one was absent, with a deprecation line. Declaring the old field with a non-None default would have made "not sent" indistinguishable from "sent the default", and the precedence rule would break.
 
-`GET /status` returns the raw job dict, so renaming the job key would have silently dropped `gemini_model` from that response. It now adds a deprecated mirror at response time rather than storing the value twice on the job. `/reconnect` and the WebSocket `complete` message build explicit payloads with no model field, so they were unaffected.
+`GET /status` returns the raw job dict, so renaming the job key would have silently dropped `gemini_model` from that response. A deprecated mirror was added at response time rather than storing the value twice on the job. `/reconnect` and the WebSocket `complete` message build explicit payloads with no model field, so they were unaffected.
+
+**The alias was removed later the same day**, once the frontend was confirmed to send `analysis_model`. `gemini_model` is no longer a declared field and the `/status` mirror is gone. `_select_analysis_model()` still looks for it in the parsed form, so a stale client is not rejected: its value is ignored (default model unless `analysis_model` is also sent) and one line is printed, `[models] Ignored removed field 'gemini_model'; send 'analysis_model'`.
 

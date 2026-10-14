@@ -65,12 +65,12 @@ output/
 
 `confidence` is always present (0–1 score). `words` is only included when `--word-timestamps` is passed.
 
-## Setup
+If Stage 2's speaker re-identification only partly worked or failed, the JSON gets a `metadata.warnings` list and the `.txt` header gets one `# Warning: ...` line per warning (for example `# Warning: Speaker re-identification failed for 3 of 120 segments; labels may be less accurate.`). Clean runs have neither, so their files are unchanged. The same warnings appear in the Stage 5 report header.
 
 ## Two ways to use the pipeline
 
 1. **Terminal** — `python main.py --input input/call.mp3`
-2. **Web UI** — start `python api.py`, run `ngrok http 8010`, then open [job-joseph.com/projects/call-analysis](https://job-joseph.com/projects/call-analysis) and paste the ngrok URL into the Backend URL field
+2. **Web UI** — start the API with `.\start_server.ps1`, run `ngrok http 8010`, then open [job-joseph.com/projects/call-analysis](https://job-joseph.com/projects/call-analysis) and paste the ngrok URL into the Backend URL field
 
 ---
 
@@ -78,7 +78,7 @@ output/
 
 ### Prerequisites
 
-- Python 3.9+ (tested on 3.11)
+- Python 3.9+ (the dev machine runs 3.12)
 - PyTorch 2.5.1+cu124 (compatible with NVIDIA driver 581.15+)
 - `ffmpeg` on your PATH
 - [ngrok](https://ngrok.com/) (optional — only needed to expose the API server to a browser frontend)
@@ -113,7 +113,7 @@ pip install "numpy<2.0" --force-reinstall
 pip install -r requirements.txt
 ```
 
-> **Why the order?** If `pip install -r requirements.txt` runs first, PyPI resolves `torch` to the latest version which pulls in `numpy 2.x`, breaking `pyannote.audio`. Installing torch from the CPU wheel index first prevents this.
+> **Why the order?** If `pip install -r requirements.txt` runs first, PyPI resolves `torch` to the latest version which pulls in `numpy 2.x`, breaking `pyannote.audio`. Installing torch from the PyTorch wheel index first prevents this.
 
 ### Configure environment
 
@@ -134,6 +134,7 @@ Edit `.env` and fill in:
 - `WHISPER_LANGUAGE` — BCP-47 language code, e.g. `en`, `fr`, `es` (default: `en`)
 - `SPEAKER_NAMES` — comma-separated real names, e.g. `Alice,Bob` (optional; replaces generic `Speaker A/B` labels)
 - `WORD_TIMESTAMPS` — `true` to include per-word timestamps in JSON output (off by default; ~10-15% overhead)
+- `RELEASE_WHISPER_AFTER_JOB` — API server only. On by default: the Whisper model is freed after each job. `0` keeps it loaded until the server exits
 
 ### Create local directories
 
@@ -244,6 +245,18 @@ To generate a report on an already-processed transcript without re-running the p
 python main.py --from-json output/call_20260327_143022.json --context work
 ```
 
+### Merging a recording processed in two parts
+
+`tools/merge_transcripts.py` joins two transcript JSONs from one recording (part 1 + part 2) into one file that `--from-json` or Report from Transcript can use:
+
+```bash
+python tools/merge_transcripts.py part1.json part2.json merged.json
+python tools/merge_transcripts.py part1.json part2.json merged.json --gap 1.0 --swap-speakers "Speaker A" "Speaker B"
+python tools/merge_transcripts.py part1.json part2.json merged.json --dry-run
+```
+
+Part 2's timestamps are offset to follow part 1 (plus `--gap` seconds, default 1.0). `--swap-speakers` swaps two labels in part 2 when its labels came out flipped. The output keeps part 1's metadata. `metadata.warnings` is replaced by both parts' warnings, each prefixed `Part 1: ` or `Part 2: `, and left out when neither part has any. This replaces the old untracked `output/merge_transcripts.py`.
+
 ### First-run note
 
 The faster-whisper `medium` model (~1.5 GB) downloads automatically on first run. This is expected and only happens once.
@@ -260,12 +273,7 @@ UserWarning: torchcodec is not installed correctly so built-in audio decoding wi
 
 ## Running the API server
 
-`api.py` exposes the pipeline over HTTP + WebSocket.
-
-Install the additional dependencies once:
-```bash
-pip install fastapi uvicorn python-multipart
-```
+`api.py` exposes the pipeline over HTTP + WebSocket. Its dependencies (`fastapi`, `uvicorn`, `python-multipart`) are in `requirements.txt`.
 
 Start the full stack in two terminals:
 
@@ -290,6 +298,10 @@ Before starting it:
 ```
 
 `-Stop` refuses any process whose command line does not show `uvicorn ... api:app --port 8010`, including a server started with `python api.py`. Stop that one with Ctrl+C in its window.
+
+`PYTHONIOENCODING=utf-8` matters when output is piped (as with `-LogFile`): Windows gives piped stdout the cp1252 encoding, which cannot encode the em dashes and tqdm bar characters the stages print. `api.py` also switches its own streams to UTF-8 at startup. If you start uvicorn by hand with piped output, set the variable yourself.
+
+After each job the server frees the Whisper model (`[job ...] Releasing Whisper model...` then `[job ...] Whisper model released; VRAM free X of Y GB`), so the next job starts with the full VRAM. Set `RELEASE_WHISPER_AFTER_JOB=0` to keep it loaded until the server exits. If a log ends on the first of those two lines, see KNOWN-ISSUES.md §2.
 
 If scripts are blocked, run `powershell -ExecutionPolicy Bypass -File .\start_server.ps1`.
 
@@ -317,6 +329,20 @@ Jobs run one at a time (GPU constraint). All outputs land in `output/jobs/{job_i
 
 Both `POST /analyse` and `POST /report-from-json` accept an optional `context_hints` parameter (free text) for correct spelling of names, places, companies, and technical terms. When provided, the hints are prepended to the system prompt so the LLM uses them for proper nouns in the report.
 
+### Progress and warnings
+
+WebSocket `progress` messages carry `stage`, `stage_name` and `message`. During Stages 1–3 they also carry `phase` and `percent`:
+
+| Stage | Phases (counted ones send a percent) |
+|-------|--------------------------------------|
+| 1 | `decode`, `noise reduction` (counted), `normalization` |
+| 2 | `model load`, `segmentation` (counted), `speaker counting`, `embeddings` (counted), `clustering`, `re-identification` |
+| 3 | `model load`, `transcription` (counted) |
+
+A counted phase starts at `0` and updates at most every 5% and every 10 s. Other phases send `percent: null`. `100` is never sent: a phase ends when the next message arrives. Stage 5 sends only the heartbeat ping. The terminal shows the same stages as tqdm bars.
+
+The `complete` message, `GET /reconnect/{job_id}` and `GET /status/{job_id}` all carry `warnings`, a list of short strings that is empty for a clean run. It is set when Stage 2's speaker re-identification is `partial` (one or more segments failed feature extraction and took their neighbour's label) or `failed` (labels are pyannote's own), or when a fixed `NUM_SPEAKERS` comes back short. `/status` also carries `reid`, the raw outcome with its counts. The server prints each one as `[job ...] Warning: ...`.
+
 ## Download endpoints
 
 Once a job completes, all output files are downloadable:
@@ -340,7 +366,7 @@ Run the pytest unit test suite:
 pytest tests/ -v
 ```
 
-Covers: config loading, export formatting, API job recovery, report prompt loading, model fallback, and API key leak prevention across all output surfaces.
+241 tests across 8 modules. Covers: config loading, export formatting (including warning lines), API job recovery, the `analysis_model` field and the removed `gemini_model` field, re-identification warnings end to end, the Whisper release after each job, report prompt loading and warning headers, model fallback and the model registry, the progress throttle, the Stage 2 re-identification outcome, `tools/merge_transcripts.py`, and API key leak prevention across all output surfaces.
 
 ### Integration tests (manual, completed)
 
@@ -392,14 +418,20 @@ ngrok's free tier drops idle WebSocket connections after ~30 s. The API handles 
 call-analysis-pipeline/
 ├── main.py               # Entry point — runs the full pipeline (CLI)
 ├── api.py                # FastAPI HTTP + WebSocket wrapper
+├── start_server.ps1      # Starts/stops the API on port 8010 with pre-checks (Windows)
 ├── config.py             # Loads .env, exposes typed settings
 ├── models.py             # Stage 5 model registry: IDs, labels, default, fallbacks, legacy aliases
 ├── stages/
 │   ├── preprocess.py     # Stage 1: noise reduction + normalization
 │   ├── diarize.py        # Stage 2: speaker diarization
+│   ├── reid_outcome.py   # Stage 2 re-identification outcome (ok/partial/failed) and warning text
 │   ├── transcribe.py     # Stage 3: faster-whisper transcription
 │   ├── export.py         # Stage 4: output formatting
-│   └── report.py         # Stage 5: Claude/Gemini API analysis report
+│   ├── report.py         # Stage 5: Claude/Gemini API analysis report
+│   └── progress.py       # Phase/percent progress reporting for Stages 1 and 3
+├── tools/
+│   └── merge_transcripts.py  # Merge part 1 + part 2 transcript JSONs
+├── tests/                # pytest unit tests (241)
 ├── prompts/
 │   ├── friend.md              # Analysis prompt for friend conversations
 │   ├── work.md                # Analysis prompt for work conversations

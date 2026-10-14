@@ -58,8 +58,11 @@ straw, not the weight — by then the process was already at its ceiling.
 through `assign_embeddings()`. The pretrained `speaker-diarization-3.1` pipeline
 instantiates with **`max_num_embeddings = inf`**, so the cap never fires.
 
-`stages/diarize.py` now sets it to 1000. Measured on the 2h43m file with
-`num_speakers=2`:
+`stages/diarize.py` now sets it to 1000. Above the cap pyannote picks the
+subset with an unseeded `random.shuffle()`, which made Stage 2 vary run to run
+(four runs of a 10-minute excerpt: 272, 272, 283, 270 segments), so `random` is
+now seeded with `CLUSTERING_SUBSAMPLE_SEED` around the call; six seeded runs
+were byte-identical. Measured on the 2h43m file with `num_speakers=2`:
 
 | cap | segments | speaker split | peak |
 |---|---|---|---|
@@ -292,8 +295,8 @@ at startup and are not affected; any other runner that imports the stages with a
 redirected stdout was. The UTF-8 reconfiguration stays in both entry points:
 other output (em dashes, tqdm bars) still benefits from it. Any re-identification
 failure that remains is now reported rather than silent — see the
-`on_reidentification` outcome in `stages/diarize.py` and the `warnings` field
-in the API.
+`on_reidentification` callback in `stages/diarize.py`, the outcome and warning
+text in `stages/reid_outcome.py`, and the `warnings` field in the API.
 
 ## 4. Stage 2 slow and out of memory because of `PYTORCH_CUDA_ALLOC_CONF` — FIXED
 
@@ -416,7 +419,7 @@ produced byte-identical segment output (37 segments on `01_Test_File_clean.wav`)
 The array halves from 1.16 GiB to 595 MB and one full-length copy disappears.
 On the 2h43m file this moved Stage 2's failure point from `sf.read` at the very
 start through to `get_embeddings` near the end — a real improvement, though not
-enough to complete on a 7.42 GB machine (see open issue 1).
+enough to complete on a 7.42 GB machine (see issue 1, since fixed).
 
 **Superseded.** This entry used to close by saying the waveform is handed to
 pyannote in memory *on purpose*, to avoid a `torchcodec` dependency. Both halves

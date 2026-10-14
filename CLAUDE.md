@@ -19,7 +19,7 @@ v1.0 complete and fully operational. FastAPI wrapper with WebSocket progress, fr
 - WebSocket UI can get stuck on the last known stage after an ngrok reconnect — the pipeline completes correctly and files are saved; use Start Over and re-check the output folder as a workaround.
 - ngrok free tier changes URL on every restart — paste the new URL into the Backend URL field on the site.
 
-**Local environment note (Windows dev machine):** There is no `venv/` for this project — dependencies are installed into the **global Python 3.12** (`C:\Users\jobjo\AppData\Local\Programs\Python\Python312\python.exe`). A separate **Python 3.11** also exists on PATH and is not set up for this project. If `python api.py` / `uvicorn api:app` fails with `ModuleNotFoundError` (`uvicorn`, `dotenv`, `torch`, etc.), first check `where python` — 3.11 may be shadowing 3.12. If packages are genuinely missing, reinstall in order: `pip install torch==2.5.1+cu124 torchaudio==2.5.1+cu124 --index-url https://download.pytorch.org/whl/cu124`, then `pip install "numpy<2.0" --force-reinstall`, then `pip install -r requirements.txt`, then `pip install fastapi uvicorn python-multipart` (not in `requirements.txt` by design — see FastAPI wrapper section below).
+**Local environment note (Windows dev machine):** There is no `venv/` for this project — dependencies are installed into the **global Python 3.12** (`C:\Users\jobjo\AppData\Local\Programs\Python\Python312\python.exe`). A separate **Python 3.11** also exists on PATH and is not set up for this project. If `python api.py` / `uvicorn api:app` fails with `ModuleNotFoundError` (`uvicorn`, `dotenv`, `torch`, etc.), first check `where python` — 3.11 may be shadowing 3.12. If packages are genuinely missing, reinstall in order: `pip install torch==2.5.1+cu124 torchaudio==2.5.1+cu124 --index-url https://download.pytorch.org/whl/cu124`, then `pip install "numpy<2.0" --force-reinstall`, then `pip install -r requirements.txt` (which includes `fastapi`, `uvicorn` and `python-multipart`).
 
 ## How to run
 
@@ -30,7 +30,7 @@ python main.py --input input/call.mp3 --context work --num-speakers 3
 python main.py --input input/call.mp3 --transcription-mode fast
 python main.py --input input/call.mp3 --speaker-names "Alice,Bob"
 python main.py --input input/call.mp3 --language fr
-# Generate analysis report via Gemini API:
+# Generate analysis report (Claude by default; Gemini via --report-model):
 python main.py --input input/call.mp3 --context work --report
 # Utility flags:
 python main.py --input input/call.mp3 --dry-run
@@ -67,7 +67,7 @@ prompts/
   public_interview.md — analysis prompt for public/media interviews (user-editable)
   date.md             — analysis prompt for date conversations (user-editable)
 tools/
-  merge_transcripts.py — merge two transcript JSONs (part 1 + part 2); combines metadata.warnings as "Part N: ..."
+  merge_transcripts.py — merge two transcript JSONs (part 1 + part 2); combines metadata.warnings as "Part N: ..."; supersedes the untracked output/merge_transcripts.py
 input/           — place source audio files here (gitignored, must exist locally)
 output/          — pipeline outputs land here (gitignored, must exist locally)
 ```
@@ -240,11 +240,11 @@ uvicorn api:app --host 0.0.0.0 --port 8010
 
 **Ports:** 8010 is this project's only port (registered in `dev-meta/PORTS.md`). Every other port in that registry belongs to another project. Never bind one of them for testing, even if it looks free locally. For tests, use FastAPI's in-process `TestClient` (as `tests/test_api.py` does), or start a throwaway server on an OS-assigned ephemeral port: `uvicorn api:app --host 127.0.0.1 --port 0`, then read the actual port from the `Uvicorn running on http://127.0.0.1:<port>` log line. Leave 8010 to the live server.
 
-Requires `fastapi`, `uvicorn`, `python-multipart` (not in `requirements.txt` — install separately or add them).
+Requires `fastapi`, `uvicorn`, `python-multipart` (all in `requirements.txt`).
 
 ### Starting the server
 
-Use `.\start_server.ps1` (repo root) rather than typing the command. It cds to the repo, sets `PYTHONIOENCODING=utf-8` and runs `python -m uvicorn api:app --host 0.0.0.0 --port 8010` in the foreground. It uses the global Python 3.12 if present. Pre-checks: it refuses to start if port 8010 is held (printing PID, name and command line), and it warns when commit headroom is below 6 GB (`$MinFreeCommitGB`; a job peaks at ~5.4 GB commit, see KNOWN-ISSUES.md §1). It checks commit rather than free physical RAM because this box runs jobs fine at ~1 GB available physical. `-LogFile` also appends to `output\server_8010.log` (UTF-8, no BOM, with session start/exit markers). In that mode it sets `PYTHONUNBUFFERED=1` so piped output stays live. `-Stop` kills the port-8010 listener only if its command line matches `uvicorn`, `api:app` and `--port 8010`. It refuses anything else, including `python api.py`. To test the script, run a copy with `$Port` replaced by an OS-assigned port. Never point it at another PORTS.md port, and do not `-Stop` the live server without asking.
+Use `.\start_server.ps1` (repo root) rather than typing the command. It cds to the repo, sets `PYTHONIOENCODING=utf-8` (piped stdout on Windows defaults to cp1252, which cannot encode the em dashes and tqdm bar characters the stages print; `api.py` also reconfigures its streams to UTF-8 as a backstop) and runs `python -m uvicorn api:app --host 0.0.0.0 --port 8010` in the foreground. It uses the global Python 3.12 if present. Pre-checks: it refuses to start if port 8010 is held (printing PID, name and command line), and it warns when commit headroom is below 6 GB (`$MinFreeCommitGB`; a job peaks at ~5.4 GB commit, see KNOWN-ISSUES.md §1). It checks commit rather than free physical RAM because this box runs jobs fine at ~1 GB available physical. `-LogFile` also appends to `output\server_8010.log` (UTF-8, no BOM, with session start/exit markers). In that mode it sets `PYTHONUNBUFFERED=1` so piped output stays live. `-Stop` kills the port-8010 listener only if its command line matches `uvicorn`, `api:app` and `--port 8010`. It refuses anything else, including `python api.py`. To test the script, run a copy with `$Port` replaced by an OS-assigned port. Never point it at another PORTS.md port, and do not `-Stop` the live server without asking.
 
 ### Endpoints
 
@@ -303,7 +303,7 @@ The `complete` WebSocket message shape:
 
 `warnings` is always a list of short human-readable strings, empty for a clean run. The same list is the `warnings` field of `/reconnect` and of the `/status` job dict (which also carries `reid`, the raw Stage 2 outcome, or `null`).
 
-`progress` messages have four fields: `{"type": "progress", "stage", "stage_name", "message"}`. Within Stages 1–3, sub-progress messages add `phase` (string) and `percent` (integer, or `null` for a phase that does not count its work). Phases: Stage 1 `decode`, `noise reduction` (counted), `normalization`; Stage 2 `model load`, `segmentation` (counted), `speaker counting`, `embeddings` (counted), `clustering`, `re-identification`; Stage 3 `model load`, `transcription` (counted). A counted phase starts at `0` and updates at most every 5% and every 10 s; `100` is never sent — a phase ends when the next message arrives. Stages 4–5 send only the four-field shape. The stage's `run(progress=None)` callback produces these; `api.py` queues each message on the pipeline thread and sends it from the single `_progress_sender` thread, skipping the live send once a newer message is queued, so a slow socket cannot stall a stage. `main.py` passes no callback.
+`progress` messages have four fields: `{"type": "progress", "stage", "stage_name", "message"}`. Within Stages 1–3, sub-progress messages add `phase` (string) and `percent` (integer, or `null` for a phase that does not count its work). Phases: Stage 1 `decode`, `noise reduction` (counted), `normalization`; Stage 2 `model load`, `segmentation` (counted), `speaker counting`, `embeddings` (counted), `clustering`, `re-identification`; Stage 3 `model load`, `transcription` (counted). A counted phase starts at `0` and updates at most every 5% and every 10 s; `100` is never sent — a phase ends when the next message arrives. Stages 4–5 send only the four-field shape. The stage's `run(progress=None)` callback produces these; `api.py` queues each message on the pipeline thread and sends it from the single `_progress_sender` thread, skipping the live send once a newer message is queued, so a slow socket cannot stall a stage. `main.py` passes no callback. On the terminal, Stages 1–3 draw tqdm bars (Stage 1 noise-reduction chunks, Stage 2 segmentation, embeddings and MFCC features, Stage 3 segments or turns); Stage 2 also prints one plain line per phase and redraws its bar at most every 5 s when stdout is not a TTY, so a piped log stays readable.
 
 ### Threading model
 

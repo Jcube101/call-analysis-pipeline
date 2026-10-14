@@ -4,7 +4,7 @@
 
 A local Python pipeline that processes a recorded voice call and produces a clean, structured transcript with speaker attribution and an optional AI-generated analysis report. Audio processing runs fully locally (no cloud audio processing), GPU-accelerated, with all secrets managed via `.env`. Report generation uses the Claude API by default (Anthropic), with Gemini API as an alternative.
 
-**Tested and working on Windows 11, Python 3.11, CUDA 12.1, GTX 1650.**
+**Tested and working on Windows 11, Python 3.12, torch 2.5.1+cu124 (NVIDIA driver 581.15), GTX 1650.**
 
 ---
 
@@ -14,7 +14,7 @@ A local Python pipeline that processes a recorded voice call and produces a clea
 |-----------|--------|-------------|
 | `--input FILE` | CLI arg | Path to source audio file (MP3, M4A, WAV, MPEG, or any ffmpeg-supported format). Required unless `--from-json` is used. |
 | `--from-json FILE` | CLI arg | Skip Stages 1–4; generate a report from an existing transcript JSON (implies `--report`) |
-| `--context CTX` | CLI / `.env` | Conversation type: `friend`, `work`, `interview`, `date`, `public_interview` |
+| `--context CTX` | CLI / `.env` | Conversation type: `friend`, `work`, `work_interview`, `user_interview`, `public_interview`, `date` |
 | `--num-speakers N` | CLI / `.env` | Integer speaker count, or omit for auto-detection |
 | `--whisper-model SIZE` | CLI / `.env` | Whisper model size: `tiny`, `base`, `small`, `medium` (default), `large` |
 | `--transcription-mode MODE` | CLI / `.env` | `accurate` (default) or `fast` |
@@ -54,6 +54,8 @@ All outputs land in `output/`. Each run produces uniquely named transcript files
 [00:01:12] Speaker B: "I'm good, just got back from..."
 ```
 
+When the run has warnings (see Stage 2 re-identification), each one adds a `# Warning: <text>` line to the header after `# Processed:`. Clean runs have none.
+
 ### transcript.json schema
 
 ```json
@@ -83,6 +85,7 @@ All outputs land in `output/`. Each run produces uniquely named transcript files
 - `speaker_names` in metadata: only present when `--speaker-names` was used
 - `confidence`: always present (0–1, duration-weighted `exp(avg_logprob)`)
 - `words`: only present when `--word-timestamps` was passed
+- `warnings` in metadata: a list of short strings, only present when non-empty (Stage 2 re-identification was `partial` or `failed`, or a fixed speaker count came back short)
 
 When `--from-json --speaker-names` is used, a `<stem>_named.json` is written alongside the original with updated speaker labels and `relabelled_at` added to metadata.
 
@@ -108,10 +111,10 @@ This allows `POST /report-from-json` to find the correct job folder when the JSO
 
 | Step | Implementation |
 |------|---------------|
-| Load audio | `pydub.AudioSegment.from_file()` — supports any ffmpeg format |
-| Standardise | Convert to mono, 16 kHz |
-| Noise reduction | `noisereduce.reduce_noise()` — spectral subtraction using first 0.5 s as noise profile; `stationary=False`, `prop_decrease=0.75` |
-| Loudness normalization | `pydub.effects.normalize()` |
+| Load + standardise | One streaming `ffmpeg` pass decodes any ffmpeg format straight to mono, 16 kHz, 16-bit PCM on disk |
+| Noise reduction | `noisereduce.reduce_noise()` — spectral subtraction using first 0.5 s as noise profile; `stationary=False`, `prop_decrease=0.75`; 60 s chunks with 0.5 s overlap, streamed from file to file |
+| Loudness normalization | `_normalize_in_place()` — a block-wise second pass matching `pydub.effects.normalize`'s 0.1 dB headroom |
+| Progress | Phases `decode`, `noise reduction` (counted), `normalization`; tqdm bar over noise reduction chunks |
 | Export | WAV, written to `output/` |
 
 **Output:** `output/<name>_clean.wav`
@@ -128,12 +131,16 @@ Can be skipped with `--skip-preprocess` when a clean WAV already exists.
 |------|---------------|
 | Model | `pyannote/speaker-diarization-3.1` via HuggingFace |
 | Auth | `HUGGINGFACE_TOKEN` from `.env` |
-| Audio input | Pre-loaded in-memory waveform dict `{"waveform": Tensor, "sample_rate": int}` — avoids torchcodec dependency |
+| Audio input | Clean WAV **file path** — pyannote reads it through torchaudio's soundfile backend, so `Audio.crop()` seeks each window from disk (see CLAUDE.md, "Audio input to pyannote") |
 | Speaker count | Passed as `num_speakers` int (or `None` for auto-detection) |
 | GPU acceleration | Used automatically if `torch.cuda.is_available()` |
+| Clustering cap | `max_num_embeddings = 1000` (`MAX_CLUSTERING_EMBEDDINGS`); the 3.1 config disables it, which made clustering O(N²) in memory on long files (KNOWN-ISSUES.md §1) |
+| Seeded subsample | Above the cap pyannote subsamples with an unseeded `random.shuffle()`; `random` is seeded with `CLUSTERING_SUBSAMPLE_SEED` around the call (state saved and restored) so repeat runs give identical segments |
 | Output unwrapping | pyannote 3.x returns `DiarizeOutput`; `exclusive_speaker_diarization` attribute is the `Annotation` used for iteration |
 | Re-identification | MFCC + delta features (librosa, 20 coefficients) per segment ≥0.5 s, mean-pooled over time; KMeans clustering (`n_clusters=num_speakers`) with L2-normalised feature vectors; cluster IDs remapped to `SPEAKER_XX` in first-appearance order; segments <0.5 s inherit the label of their nearest longer segment |
+| Re-identification outcome | Reported through `run(on_reidentification=...)` as a dict whose shape lives in `stages/reid_outcome.py`: `ok` (every segment it tried was analysed), `partial` (clustering ran, but at least 1 segment — `PARTIAL_MIN_FAILED_SEGMENTS` — failed feature extraction and took its nearest neighbour's label), or `failed` (labels are pyannote's: scikit-learn missing, an exception, or too few usable segments). New labels are written back all at once or not at all. `warnings_for()` turns the outcome into warning strings; a fixed `NUM_SPEAKERS` that comes back short also warns, auto-detect does not |
 | Label mapping | `SPEAKER_00` → `Speaker A`, `SPEAKER_01` → `Speaker B`, etc. (applied after re-identification) |
+| Progress | Phases `model load`, `segmentation` (counted), `speaker counting`, `embeddings` (counted), `clustering`, `re-identification`; one plain line per phase plus a tqdm bar (redrawn at most every 5 s when stdout is not a TTY) |
 
 **Output:** List of segment dicts:
 ```python
@@ -146,7 +153,7 @@ Can be skipped with `--skip-preprocess` when a clean WAV already exists.
 
 **pyannote version note:** pyannote.audio 3.x wraps diarization results in a `DiarizeOutput` dataclass rather than returning a `pyannote.core.Annotation` directly. The pipeline resolves the correct annotation object with a fallback chain (see `diarize.py`).
 
-**torchcodec warning:** pyannote emits a `UserWarning` about `torchcodec` on import. This is suppressed because the pipeline uses the in-memory waveform path, which does not require torchcodec.
+**torchcodec warning:** pyannote emits a `UserWarning` about `torchcodec` on import whatever the input form. It is suppressed because torchcodec is never needed: torchaudio uses the soundfile backend here.
 
 ---
 
@@ -166,6 +173,7 @@ Two modes controlled by `TRANSCRIPTION_MODE` / `--transcription-mode`:
 | Per-segment | One `model.transcribe()` call per diarization segment |
 | Short segment filter | Segments < 500 ms are skipped (prevents hallucinations) |
 | Language | Configurable via `WHISPER_LANGUAGE` (default: `en`) |
+| Progress | Phases `model load`, `transcription` (counted); tqdm bar per segment (accurate) or per turn (fast) |
 
 Produces fine-grained sentence-level output. ~1x real-time on GTX 1650 for a 10-minute file.
 
@@ -189,6 +197,7 @@ Same model and device setup. Merges consecutive same-speaker diarization segment
 | Metadata | Source file name, context tag, speaker count, ISO 8601 timestamp; `speaker_names` included if provided |
 | TXT | `[HH:MM:SS] Speaker X: "..."` per segment, with header comment block |
 | JSON | `{"metadata": {...}, "transcript": [...]}` with timestamps rounded to 3 dp; `confidence` always present; `words` present when `--word-timestamps` was passed |
+| Warnings | `run(warnings=...)` writes `metadata.warnings` and `# Warning:` header lines only when the list is non-empty, so clean runs are unchanged; `clean_warnings()` sanitises warnings read back from an uploaded JSON (malformed values are dropped) |
 | Relabelling | `write_relabelled()` writes `<stem>_named.json` when `--from-json --speaker-names` is used |
 
 ---
@@ -213,8 +222,9 @@ Supports both Anthropic Claude (`claude-*` models) and Google Gemini (`gemini-*`
 | Terminal preview | First 20 lines of the report are printed after Stage 5 completes |
 | Fallback | Claude models fall back to `claude-haiku-5-5` on failure; Gemini models fall back to `gemini-3.8-flash` on 503 |
 | Truncation | A response stopped by the output token limit raises an error rather than writing a truncated report |
+| Warnings | `run(warnings=...)` adds `Warning:` lines to the metadata block the model sees and `**Warning:** ...` lines to the report header after `**Generated:**`; with no warnings both are unchanged. `--from-json` and `/report-from-json` take them from the uploaded file's `metadata.warnings` |
 
-**Prompt customisation:** Edit `prompts/<context>.md` to change what the LLM focuses on for each conversation type. The four built-in contexts are `friend`, `work`, `interview`, and `date`. Each prompt defines specific output sections and includes a speaker label reliability warning — pyannote's automatic diarisation can flip speaker labels on long recordings, so prompts instruct the model to base analysis on content rather than assuming label consistency.
+**Prompt customisation:** Edit `prompts/<context>.md` to change what the LLM focuses on for each conversation type. The six built-in contexts are `friend`, `work`, `work_interview`, `user_interview`, `public_interview`, and `date`. Each prompt defines specific output sections and includes a speaker label reliability warning — pyannote's automatic diarisation can flip speaker labels on long recordings, so prompts instruct the model to base analysis on content rather than assuming label consistency.
 
 **`--from-json` mode:** `main.py` supports `python main.py --from-json output/<name>.json` to run Stage 5 on an existing transcript without re-running Stages 1–4. Context and speaker count are read from the JSON metadata and can be overridden with `--context`.
 
@@ -234,6 +244,7 @@ Supports both Anthropic Claude (`claude-*` models) and Google Gemini (`gemini-*`
 | `whisper_language` | `WHISPER_LANGUAGE` | `--language` | `"en"` |
 | `speaker_names` | `SPEAKER_NAMES` | `--speaker-names` | `[]` (generic) |
 | `word_timestamps` | `WORD_TIMESTAMPS` | `--word-timestamps` | `False` |
+| `release_whisper_after_job` | `RELEASE_WHISPER_AFTER_JOB` | — (API server only) | `True` |
 
 ---
 
@@ -264,12 +275,12 @@ Stage 5 (AI report) adds ~4–10s depending on transcript length, model choice, 
 
 | Requirement | Notes |
 |-------------|-------|
-| Python | 3.9+ (tested on 3.11) |
+| Python | 3.9+ (tested on 3.12) |
 | ffmpeg | Must be on PATH; checked at startup |
 | RAM | ~4 GB minimum |
 | VRAM | 4 GB sufficient with int8_float16 compute type |
 | Disk | ~1.5 GB for faster-whisper medium model cache |
-| GPU | Optional; CUDA 12.1 tested on GTX 1650 (sm_75) |
+| GPU | Optional; torch 2.5.1+cu124 tested on GTX 1650 (sm_75), NVIDIA driver 581.15 (CUDA 13.0) |
 | OS | macOS, Linux, Windows (no Unix-only shell commands) |
 | Internet | Required for Stage 5 (Claude or Gemini API calls) |
 
@@ -278,7 +289,7 @@ Stage 5 (AI report) adds ~4–10s depending on transcript length, model choice, 
 Due to pip resolution behaviour, torch must be installed before other packages or pip will pull in an incompatible torch+numpy combination:
 
 ```bash
-pip install torch==2.1.0+cpu torchaudio==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
+pip install torch==2.5.1+cu124 torchaudio==2.5.1+cu124 --index-url https://download.pytorch.org/whl/cu124
 pip install "numpy<2.0" --force-reinstall
 pip install -r requirements.txt
 ```
@@ -287,12 +298,13 @@ pip install -r requirements.txt
 
 | Package | Constraint | Reason |
 |---------|-----------|--------|
-| `torch` | `==2.1.0+cu121` | Newer torch pulls in numpy 2.x |
+| `torch` | `==2.5.1+cu124` | Newer torch pulls in numpy 2.x; cu124 wheels run on CUDA 13.x drivers |
 | `numpy` | `<2.0` | pyannote compiled against numpy 1.x |
 | `pyannote.audio` | `<4.0` | 4.0.4 requires torch>=2.8.0 (doesn't exist) |
 | `huggingface_hub` | `<1.0.0` | 1.x removed `use_auth_token` used by pyannote 3.x internals |
 | `google-genai` | `>=1.0.0` | Replaces deprecated `google-generativeai` package |
 | `anthropic` | `>=0.40.0` | Claude API for Stage 5 report generation (default provider) |
+| `ctranslate2` / `faster-whisper` | `==4.8.2` / `==1.2.1` | Freeing the Whisper model after each API job was only verified on these versions (KNOWN-ISSUES.md §2) |
 
 ---
 
@@ -318,8 +330,8 @@ pip install -r requirements.txt
 | GET | `/health` | Server health check |
 | POST | `/analyse` | Multipart upload (audio file + form params, incl. `analysis_model`); starts pipeline; returns `{"job_id": "..."}` |
 | POST | `/report-from-json` | Multipart upload (transcript JSON + form params, incl. `analysis_model`); runs Stage 5 only; returns `{"job_id": "..."}` |
-| GET | `/status/{job_id}` | Returns `{"status": "...", "stage": "..."}` |
-| GET | `/reconnect/{job_id}` | Returns full job state: transcript, report, metadata, status |
+| GET | `/status/{job_id}` | Returns the job dict as is, including `status`, the current stage, `warnings` and `reid` (raw Stage 2 outcome, or `null`) |
+| GET | `/reconnect/{job_id}` | Returns full job state: transcript, report, metadata, status, `warnings` |
 | GET | `/download/{job_id}/transcript` | `.txt` transcript file |
 | GET | `/download/{job_id}/json` | `transcript_named.json` if present, else timestamped `.json` |
 | GET | `/download/{job_id}/report` | `*_report.md` file (`text/markdown`) |
@@ -335,7 +347,7 @@ Download endpoints serve files directly from disk without checking job status �
 1. User uploads audio at job-joseph.com/projects/call-analysis
 2. Frontend POSTs to `/analyse` with `generate_report=true` (if selected) → `job_id` returned
 3. Frontend opens `WS /ws/{job_id}` → receives progress messages per stage
-4. Pipeline completes → `{"type": "complete", "transcript": [...], "report": "...", "metadata": {...}}` sent
+4. Pipeline completes → `{"type": "complete", "transcript": [...], "report": "...", "metadata": {...}, "warnings": [...]}` sent (`warnings` is empty for a clean run)
 5. Frontend displays transcript + rendered report; download buttons call `/download/{job_id}/{type}`
 6. If WS drops (ngrok timeout), frontend calls `GET /reconnect/{job_id}` → full state recovered
 
@@ -343,7 +355,7 @@ Download endpoints serve files directly from disk without checking job status �
 
 1. User uploads existing `.json` transcript + optional speaker names
 2. Frontend POSTs to `/report-from-json` → `job_id` returned
-3. Stage 5 runs; heartbeat keeps WS alive during Gemini API call (30–60 s)
+3. Stage 5 runs; heartbeat keeps WS alive during the LLM API call (30–60 s)
 4. `complete` message delivers rendered report; download button calls `/download/{job_id}/report`
 
 ### Output structure (API mode)
@@ -365,6 +377,16 @@ output/jobs/{job_id}/
 - asyncio event loop captured at startup; background threads push WS messages via `asyncio.run_coroutine_threadsafe(...).result(timeout=5)`
 - All WS messages stored in `job["message_queue"]` — replayed to clients that reconnect
 - `threading.excepthook` installed to prevent thread crashes killing uvicorn
+- Progress messages are queued on the pipeline thread and sent from a single `_progress_sender` thread, which skips the live send once a newer message is queued, so a slow socket cannot stall a stage
+- After each job, `_run_pipeline`'s `finally` frees the Whisper model (`_release_whisper()`), unless `RELEASE_WHISPER_AFTER_JOB=0`
+
+### Progress messages
+
+`progress` messages have four fields: `{"type": "progress", "stage", "stage_name", "message"}`. Within Stages 1–3, sub-progress messages add `phase` (string) and `percent` (integer, or `null` for a phase that does not count its work); the phases are listed under each stage above. A counted phase starts at `0` and updates at most every 5% and every 10 s; `100` is never sent — a phase ends when the next message arrives. Stages 4–5 send only the four-field shape (Stage 5 as a 10 s heartbeat). `main.py` passes no callback; the CLI shows tqdm bars instead.
+
+### Starting the server
+
+`.\start_server.ps1` runs `python -m uvicorn api:app --host 0.0.0.0 --port 8010` with `PYTHONIOENCODING=utf-8`, after refusing to start if port 8010 is held and warning when commit headroom is below 6 GB. `-LogFile` also appends output to `output\server_8010.log`; `-Stop` stops the port-8010 listener only if it is this project's uvicorn. UTF-8 output matters: piped stdout on Windows defaults to cp1252, which cannot encode the em dashes and tqdm bar characters the stages print (`api.py` also reconfigures its streams to UTF-8 at startup).
 
 ### Settings isolation
 
@@ -380,6 +402,12 @@ Three-layer setup for ngrok compatibility:
 ### Stage 5 heartbeat
 
 LLM API calls can take 30–60 s. A `_heartbeat_worker` daemon thread sends a progress ping every 10 s during Stage 5 to prevent ngrok from closing the idle WebSocket connection.
+
+---
+
+## Tools
+
+`tools/merge_transcripts.py part1.json part2.json merged.json [--gap 1.0] [--swap-speakers A B] [--dry-run]` merges two transcript JSONs of one recording. Part 2's timestamps are offset to follow part 1 plus `--gap` seconds; `--swap-speakers` swaps two labels in part 2. The output keeps part 1's metadata, with `metadata.warnings` replaced by both parts' warnings prefixed `Part 1: ` / `Part 2: ` (omitted when neither has any). It supersedes the untracked `output/merge_transcripts.py`.
 
 ---
 
