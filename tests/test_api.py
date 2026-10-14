@@ -1,7 +1,8 @@
 """
 Tests for api.py logic that does not require a running server.
 
-Functions under test: get_or_recover_job, ALLOWED_GEMINI_MODELS,
+Functions under test: get_or_recover_job, the analysis_model form field
+(and its deprecated gemini_model alias), the model registry,
 and the glob-based file discovery patterns used during recovery.
 
 Note: get_or_recover_job() builds its job_dir as
@@ -35,7 +36,8 @@ for _mod in (
     if _mod not in sys.modules:
         sys.modules[_mod] = types.ModuleType(_mod)
 
-from api import ALLOWED_GEMINI_MODELS, get_or_recover_job, jobs
+from api import get_or_recover_job, jobs
+from models import ALLOWED_MODELS
 
 
 # ---------------------------------------------------------------------------
@@ -50,35 +52,35 @@ def _make_job_dir(base_dir, job_id):
 
 
 # ---------------------------------------------------------------------------
-# ALLOWED_GEMINI_MODELS
+# ALLOWED_MODELS
 # ---------------------------------------------------------------------------
 
-def test_allowed_gemini_models_contains_flash():
-    assert "gemini-3.8-flash" in ALLOWED_GEMINI_MODELS
+def test_allowed_models_contains_gemini_flash():
+    assert "gemini-3.8-flash" in ALLOWED_MODELS
 
 
-def test_allowed_gemini_models_contains_pro():
-    assert "gemini-4-argon" in ALLOWED_GEMINI_MODELS
+def test_allowed_models_contains_gemini_pro():
+    assert "gemini-4-argon" in ALLOWED_MODELS
 
 
 def test_allowed_models_contains_claude_haiku():
-    assert "claude-haiku-5-5" in ALLOWED_GEMINI_MODELS
+    assert "claude-haiku-5-5" in ALLOWED_MODELS
 
 
 def test_allowed_models_contains_claude_sonnet():
-    assert "claude-sonnet-5-5" in ALLOWED_GEMINI_MODELS
+    assert "claude-sonnet-5-5" in ALLOWED_MODELS
 
 
-def test_allowed_gemini_models_matches_registry():
-    from models import ALLOWED_MODELS, MODELS
-    assert ALLOWED_GEMINI_MODELS == ALLOWED_MODELS == list(MODELS)
-    assert len(ALLOWED_GEMINI_MODELS) == 4
+def test_allowed_models_matches_registry():
+    from models import MODELS
+    assert ALLOWED_MODELS == list(MODELS)
+    assert len(ALLOWED_MODELS) == 4
 
 
 def test_allowed_models_exclude_legacy_ids():
     """Retired IDs are remapped, not accepted as-is."""
     from models import LEGACY_ALIASES
-    assert not set(LEGACY_ALIASES) & set(ALLOWED_GEMINI_MODELS)
+    assert not set(LEGACY_ALIASES) & set(ALLOWED_MODELS)
 
 
 # ---------------------------------------------------------------------------
@@ -382,10 +384,10 @@ def test_job_dict_contains_no_secret_keys():
             "generate_report": True,
             "skip_preprocess": False,
             "whisper_model": "medium",
-            "gemini_model": "claude-haiku-5-5",
+            "analysis_model": "claude-haiku-5-5",
         },
         "generate_report": True,
-        "gemini_model": "claude-haiku-5-5",
+        "analysis_model": "claude-haiku-5-5",
         "message_queue": [],
         "current_stage": 5,
         "stage_name": "AI Report",
@@ -436,7 +438,7 @@ def test_settings_keys_not_in_job_dict_keys():
     from config import Settings
     secret_attrs = {"huggingface_token", "gemini_api_key", "anthropic_api_key"}
     job_keys = {
-        "status", "params", "generate_report", "gemini_model",
+        "status", "params", "generate_report", "analysis_model",
         "message_queue", "current_stage", "stage_name", "progress_message",
         "transcript", "metadata", "report_path", "report", "error",
         "output_dir", "files", "report_path",
@@ -590,7 +592,7 @@ def test_report_from_json_starts_with_empty_message_queue(tmp_path, monkeypatch)
             file=FakeUpload(),
             context=None,
             speaker_names=None,
-            gemini_model="claude-haiku-5-5",
+            analysis_model="claude-haiku-5-5",
             context_hints="",
         ))
         assert jobs[job_id]["message_queue"] == []
@@ -752,3 +754,86 @@ def test_reconnect_body_unchanged_between_202_and_200():
     running = json.loads(_reconnect_raw("b-job", _job(status="running")).body)
     complete = json.loads(_reconnect_raw("b-job", _job(status="complete")).body)
     assert running.keys() == complete.keys()
+
+
+# ---------------------------------------------------------------------------
+# analysis_model form field and its deprecated gemini_model alias
+# ---------------------------------------------------------------------------
+
+_DEPRECATION_LINE = "[models] Deprecated field 'gemini_model' used; send 'analysis_model'"
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    """TestClient with job execution stubbed out and output/ under tmp_path."""
+    from fastapi.testclient import TestClient
+    import api
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(api.executor, "submit", lambda *a, **k: None)
+    return TestClient(api.app)
+
+
+def _post_report(client, **fields):
+    files = {"file": ("t.json", json.dumps({"metadata": {}, "segments": []}), "application/json")}
+    resp = client.post("/report-from-json", data=fields, files=files)
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+    return job_id, jobs[job_id]
+
+
+def test_analysis_model_alone_is_used(client, capsys):
+    _, job = _post_report(client, analysis_model="claude-sonnet-5-5")
+    assert job["analysis_model"] == "claude-sonnet-5-5"
+    assert job["params"]["analysis_model"] == "claude-sonnet-5-5"
+    assert "gemini_model" not in job
+    assert "Deprecated field" not in capsys.readouterr().out
+
+
+def test_gemini_model_alone_is_used_with_deprecation_line(client, capsys):
+    _, job = _post_report(client, gemini_model="gemini-3.8-flash")
+    assert job["analysis_model"] == "gemini-3.8-flash"
+    assert _DEPRECATION_LINE in capsys.readouterr().out
+
+
+def test_both_fields_sent_analysis_model_wins(client, capsys):
+    _, job = _post_report(client, analysis_model="claude-haiku-5-5", gemini_model="gemini-4-argon")
+    assert job["analysis_model"] == "claude-haiku-5-5"
+    assert "Deprecated field" not in capsys.readouterr().out
+
+
+def test_neither_field_uses_default(client):
+    from models import DEFAULT_MODEL
+    _, job = _post_report(client)
+    assert job["analysis_model"] == DEFAULT_MODEL
+
+
+def test_legacy_id_via_deprecated_field_is_remapped(client, capsys):
+    _, job = _post_report(client, gemini_model="claude-haiku-4-5-20251001")
+    assert job["analysis_model"] == "claude-haiku-5-5"
+    out = capsys.readouterr().out
+    assert _DEPRECATION_LINE in out
+    assert "Legacy model ID 'claude-haiku-4-5-20251001'" in out
+
+
+def test_unknown_analysis_model_falls_back_to_default(client):
+    from models import DEFAULT_MODEL
+    _, job = _post_report(client, analysis_model="gpt-4o")
+    assert job["analysis_model"] == DEFAULT_MODEL
+
+
+def test_analyse_endpoint_accepts_analysis_model(client):
+    files = {"file": ("call.mp3", b"not really audio", "audio/mpeg")}
+    resp = client.post("/analyse", data={"analysis_model": "gemini-4-argon", "skip_preprocess": "true"},
+                       files=files)
+    assert resp.status_code == 200
+    job = jobs[resp.json()["job_id"]]
+    assert job["analysis_model"] == "gemini-4-argon"
+    assert job["params"]["analysis_model"] == "gemini-4-argon"
+
+
+def test_status_keeps_deprecated_gemini_model_mirror(client):
+    job_id, job = _post_report(client, analysis_model="claude-sonnet-5-5")
+    body = client.get(f"/status/{job_id}").json()
+    assert body["analysis_model"] == body["gemini_model"] == "claude-sonnet-5-5"
+    assert body["params"]["gemini_model"] == "claude-sonnet-5-5"
+    assert "gemini_model" not in job, "mirror must not be written back to the job"

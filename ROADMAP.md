@@ -94,7 +94,7 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 - [x] **Report from JSON writes back to original job folder** — `POST /report-from-json` links to existing job by `metadata.job_id`
 - [x] **Job disk recovery after server restart** — files persist in `output/jobs/{job_id}/`, served directly from disk with no status check
 - [x] **generate_report flag threading fix** — stored explicitly in job dict; explicit `bool()` cast handles string form values
-- [x] **Selectable AI model** — `gemini_model` param on both POST endpoints; launched with Claude Haiku 4.5 / Sonnet 4.6 and Gemini 3 Flash / 3.1 Pro (since migrated, see v1.1); routes to correct provider; invalid values replaced with default
+- [x] **Selectable AI model** — model param on both POST endpoints (`gemini_model`, renamed `analysis_model` in v1.1); launched with Claude Haiku 4.5 / Sonnet 4.6 and Gemini 3 Flash / 3.1 Pro (since migrated, see v1.1); routes to correct provider; invalid values replaced with default
 - [x] **Automatic fallback** — Claude models fall back to Haiku on failure; Gemini models fall back to Flash on 503; actual model used is logged and shown in report header
 - [x] **Context hints** — `context_hints` parameter on both POST endpoints; free-text hints for correct spelling of names, places, and terms prepended to system prompt
 - [x] **Stale state fix** — full reset between pipeline runs; `runId` pattern discards stale WebSocket messages from previous runs
@@ -133,6 +133,8 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 - [ ] **Watch mode** — auto-process new files as they appear in `input/`
 - [ ] **Update CallAnalysisPipelineDetail.tsx** — reflect full built state including FastAPI, ngrok, web UI, and Gemini model selection
 - [x] **Model registry and 5.5 / 3.8 migration** — `models.py` is the single source of Stage 5 model IDs; models moved to `claude-haiku-5-5` (default), `claude-sonnet-5-5`, `gemini-3.8-flash`, `gemini-4-argon`; legacy IDs remapped with a log line; Claude thinking blocks handled; truncated output raises; CLI gains `--report-model` and now passes the Anthropic key (CLI Claude reports previously failed auth)
+- [x] **Rename `gemini_model` to `analysis_model` (2026-10-14)** — API field, job dict key, `report.run()` / `validate_for_report()` params; `gemini_model` kept as a deprecated form alias (new field wins if both sent) and as a `/status` mirror
+- [ ] **Remove the `gemini_model` alias** — once the Lovable frontend sends `analysis_model` and the deprecation line stops appearing in server logs
 - [x] **Stream Stage 3 audio slices** — `transcribe.py` reads each diarization segment from disk via `_WavReader` instead of loading the whole clean WAV; audio cost dropped from ~2x file size to a flat ~25 MB
 - [x] **Shrink the Stage 2 waveform buffers** — `diarize.py` reads the clean WAV as `float32` instead of `soundfile`'s float64 default; 1.16 GiB array down to 595 MB and one full-length copy removed, output bit-identical
 - [x] **Drop `pydub`** — removed from `requirements.txt`; nothing in the pipeline imports it

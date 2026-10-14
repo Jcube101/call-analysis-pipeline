@@ -504,7 +504,7 @@ Never write to the real `output/` directory in tests. Use pytest's `tmp_path` fi
 
 ### pytest-mock and unittest.mock are sufficient for API mocking
 
-Patch `stages.report._call_gemini` / `stages.report._call_claude` or the `_model` variants rather than the SDK itself. This keeps tests stable against SDK version changes. When testing `report.run()`, pass `gemini_model="gemini-3.8-flash"` explicitly to test the Gemini path (default is now Claude).
+Patch `stages.report._call_gemini` / `stages.report._call_claude` or the `_model` variants rather than the SDK itself. This keeps tests stable against SDK version changes. When testing `report.run()`, pass `analysis_model="gemini-3.8-flash"` explicitly to test the Gemini path (default is now Claude).
 
 ### FastAPI TestClient for future automated API tests
 
@@ -554,12 +554,12 @@ ALLOWED_CONTEXTS = [
     "user_interview",
 ]
 
-# In each endpoint, right after gemini_model validation:
+# In each endpoint, right after model validation:
 if context is not None and context not in ALLOWED_CONTEXTS:
     context = "friend"
 ```
 
-This mirrors the existing pattern for `ALLOWED_GEMINI_MODELS`. The list also replaces the `VALID_CONTEXTS` import from `config.py` in `api.py` — the API layer owns its own validation; `config.py` owns the pipeline-level set.
+This mirrors the pattern used for the model allowlist (then `ALLOWED_GEMINI_MODELS`, now `ALLOWED_MODELS` in `models.py`). The list also replaces the `VALID_CONTEXTS` import from `config.py` in `api.py` — the API layer owns its own validation; `config.py` owns the pipeline-level set.
 
 ---
 
@@ -622,9 +622,15 @@ On the report prompt, `claude-haiku-5-5` returned `[thinking, text]`; a trivial 
 
 ### The CLI never passed the Anthropic key
 
-`main.py` called `report.run()` without `gemini_model` or `anthropic_api_key`, so every CLI report defaulted to Claude with an empty key and failed with `Could not resolve authentication method`. `validate_for_report()` passed because the key was in `.env` — validation checked the settings, not what was handed to the call. Both are now passed through, plus a `--report-model` flag.
+`main.py` called `report.run()` without the model (then `gemini_model`) or `anthropic_api_key`, so every CLI report defaulted to Claude with an empty key and failed with `Could not resolve authentication method`. `validate_for_report()` passed because the key was in `.env` — validation checked the settings, not what was handed to the call. Both are now passed through, plus a `--report-model` flag.
 
 ### Gemini may omit optional sections
 
 `prompts/work.md` says "If none, omit this section" for Risks and Blockers. Gemini 3.8 Flash and 4 Argon omit it on a short call where Claude includes it. That is prompt compliance, not truncation — check the last section is present before suspecting a cut-off.
+
+### Renaming a public field: alias, don't break (2026-10-14)
+
+`gemini_model` carried Claude models too, so it was renamed `analysis_model`. The deployed frontend still sends `gemini_model`, so both form fields are declared as `Optional[str] = Form(None)` and resolved in `_select_analysis_model()`: the new field wins, the old one is read only when the new one is absent and prints a deprecation line. Declaring the old field with a non-None default would make "not sent" indistinguishable from "sent the default", and the precedence rule would break.
+
+`GET /status` returns the raw job dict, so renaming the job key would have silently dropped `gemini_model` from that response. It now adds a deprecated mirror at response time rather than storing the value twice on the job. `/reconnect` and the WebSocket `complete` message build explicit payloads with no model field, so they were unaffected.
 

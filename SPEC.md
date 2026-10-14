@@ -316,8 +316,8 @@ pip install -r requirements.txt
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Server health check |
-| POST | `/analyse` | Multipart upload (audio file + form params); starts pipeline; returns `{"job_id": "..."}` |
-| POST | `/report-from-json` | Multipart upload (transcript JSON); runs Stage 5 only; returns `{"job_id": "..."}` |
+| POST | `/analyse` | Multipart upload (audio file + form params, incl. `analysis_model`); starts pipeline; returns `{"job_id": "..."}` |
+| POST | `/report-from-json` | Multipart upload (transcript JSON + form params, incl. `analysis_model`); runs Stage 5 only; returns `{"job_id": "..."}` |
 | GET | `/status/{job_id}` | Returns `{"status": "...", "stage": "..."}` |
 | GET | `/reconnect/{job_id}` | Returns full job state: transcript, report, metadata, status |
 | GET | `/download/{job_id}/transcript` | `.txt` transcript file |
@@ -327,6 +327,8 @@ pip install -r requirements.txt
 | WS | `/ws/{job_id}` | WebSocket — progress messages, final `complete` payload |
 
 Download endpoints serve files directly from disk without checking job status — files are returned as soon as they exist.
+
+**Model field:** both POST endpoints take `analysis_model` (allowed values in `models.py`; legacy IDs remapped, unknown values fall back to the default). `gemini_model` is a deprecated alias (renamed 2026-10-14): it is read only when `analysis_model` is absent, and prints `[models] Deprecated field 'gemini_model' used; send 'analysis_model'`. If both are sent, `analysis_model` wins. `GET /status` also echoes a deprecated `gemini_model` mirror of `analysis_model`.
 
 ### Full pipeline flow (frontend)
 

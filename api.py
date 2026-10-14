@@ -59,7 +59,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from config import Settings, settings
-from models import ALLOWED_MODELS, DEFAULT_MODEL, resolve_model
+from models import DEFAULT_MODEL, resolve_model
 
 # Same cp1252 problem main.py has: the stage modules this server runs print
 # characters cp1252 cannot encode (Stage 2's ">=" in its feature-extraction
@@ -74,9 +74,6 @@ for _stream in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError, OSError):
         pass
 
-# Kept under its old name for existing imports; the registry lives in models.py
-ALLOWED_GEMINI_MODELS = ALLOWED_MODELS
-
 ALLOWED_CONTEXTS = [
     "friend",
     "work",
@@ -85,6 +82,24 @@ ALLOWED_CONTEXTS = [
     "public_interview",
     "user_interview",
 ]
+
+
+def _select_analysis_model(analysis_model: Optional[str], gemini_model: Optional[str]) -> str:
+    """
+    Pick the Stage 5 model from the form fields.
+
+    analysis_model is the primary field. gemini_model is its deprecated alias
+    (renamed 2026-10-14) kept for frontends that have not migrated; it is only
+    read when analysis_model is absent. Legacy IDs and unknown values are
+    handled by resolve_model().
+    """
+    if analysis_model:
+        return resolve_model(analysis_model)
+    if gemini_model:
+        print("[models] Deprecated field 'gemini_model' used; send 'analysis_model'")
+        return resolve_model(gemini_model)
+    return DEFAULT_MODEL
+
 
 # Snapshot of .env defaults taken once at startup — reused on every job reset
 # to avoid re-parsing environment variables per request.
@@ -467,8 +482,8 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
         # message always carries the finished report content.
         generate_report = bool(job.get("generate_report", False))
         if generate_report:
-            gemini_model = job.get("gemini_model", DEFAULT_MODEL)
-            settings.validate_for_report(gemini_model)
+            analysis_model = job.get("analysis_model", DEFAULT_MODEL)
+            settings.validate_for_report(analysis_model)
             _push_progress(job_id, 5, "AI Report", "Stage 5: Generating analysis report...")
             speaker_counts = Counter(s["speaker"] for s in transcribed_segments)
             try:
@@ -494,7 +509,7 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
                     audio_duration=audio_duration,
                     speaker_counts=dict(speaker_counts),
                     prompts_dir="prompts",
-                    gemini_model=gemini_model,
+                    analysis_model=analysis_model,
                     gemini_api_key=settings.gemini_api_key,
                     anthropic_api_key=settings.anthropic_api_key,
                     context_hints=job.get("context_hints", ""),
@@ -577,8 +592,8 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
             )
             files["json"] = relabelled
 
-        gemini_model = job.get("gemini_model", DEFAULT_MODEL)
-        settings.validate_for_report(gemini_model)
+        analysis_model = job.get("analysis_model", DEFAULT_MODEL)
+        settings.validate_for_report(analysis_model)
         _push_progress(job_id, 5, "AI Report", "Stage 5: Generating analysis report...")
         speaker_counts = Counter(s["speaker"] for s in transcribed_segments)
         audio_duration = max((s["end"] for s in transcribed_segments), default=None)
@@ -599,7 +614,7 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
                 audio_duration=audio_duration,
                 speaker_counts=dict(speaker_counts),
                 prompts_dir="prompts",
-                gemini_model=gemini_model,
+                analysis_model=analysis_model,
                 gemini_api_key=settings.gemini_api_key,
                 anthropic_api_key=settings.anthropic_api_key,
                 context_hints=job.get("context_hints", ""),
@@ -702,7 +717,8 @@ async def analyse(
     generate_report: bool = Form(False),
     skip_preprocess: bool = Form(False),
     whisper_model: Optional[str] = Form(None),
-    gemini_model: str = Form(DEFAULT_MODEL),
+    analysis_model: Optional[str] = Form(None),
+    gemini_model: Optional[str] = Form(None),  # deprecated alias of analysis_model
     context_hints: str = Form(""),
 ):
     # Preflight before anything is written to disk or queued, so a broken
@@ -710,7 +726,7 @@ async def analyse(
     if not skip_preprocess:
         _check_ffmpeg()
 
-    gemini_model = resolve_model(gemini_model)
+    analysis_model = _select_analysis_model(analysis_model, gemini_model)
     if context is not None and context not in ALLOWED_CONTEXTS:
         context = "friend"
 
@@ -738,14 +754,14 @@ async def analyse(
         "generate_report": bool(generate_report),
         "skip_preprocess": skip_preprocess,
         "whisper_model": whisper_model,
-        "gemini_model": gemini_model,
+        "analysis_model": analysis_model,
     }
 
     jobs[job_id] = {
         "status": "queued",
         "params": params,
         "generate_report": bool(generate_report),
-        "gemini_model": gemini_model,
+        "analysis_model": analysis_model,
         "context_hints": context_hints.strip(),
         "message_queue": [],
         "current_stage": None,
@@ -768,10 +784,11 @@ async def report_from_json(
     file: UploadFile = File(...),
     context: Optional[str] = Form(None),
     speaker_names: Optional[str] = Form(None),
-    gemini_model: str = Form(DEFAULT_MODEL),
+    analysis_model: Optional[str] = Form(None),
+    gemini_model: Optional[str] = Form(None),  # deprecated alias of analysis_model
     context_hints: str = Form(""),
 ):
-    gemini_model = resolve_model(gemini_model)
+    analysis_model = _select_analysis_model(analysis_model, gemini_model)
     if context is not None and context not in ALLOWED_CONTEXTS:
         context = "friend"
 
@@ -808,7 +825,7 @@ async def report_from_json(
     params = {
         "context": context,
         "speaker_names": parsed_names,
-        "gemini_model": gemini_model,
+        "analysis_model": analysis_model,
     }
 
     # Preserve files and transcript from the prior pipeline run if available
@@ -820,7 +837,7 @@ async def report_from_json(
         # something went wrong, never "not asked for". /reconnect reports this
         # as report_expected.
         "generate_report": True,
-        "gemini_model": gemini_model,
+        "analysis_model": analysis_model,
         "context_hints": context_hints.strip(),
         # Always empty: the queue is replayed in full to every client that
         # connects to /ws, so inheriting the prior run's queue made a fresh job
@@ -847,7 +864,15 @@ async def status(job_id: str):
     job = get_or_recover_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    # Deprecated mirrors of analysis_model (top level and in params) so /status
+    # clients reading the pre-2026-10-14 key keep working. Not stored on the job.
+    body = dict(job)
+    if "analysis_model" in job:
+        body["gemini_model"] = job["analysis_model"]
+    params = job.get("params")
+    if isinstance(params, dict) and "analysis_model" in params:
+        body["params"] = {**params, "gemini_model": params["analysis_model"]}
+    return body
 
 
 @app.get("/reconnect/{job_id}")

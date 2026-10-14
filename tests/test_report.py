@@ -250,7 +250,7 @@ def test_report_saved_to_correct_path(tmp_path, sample_segments):
                 audio_duration=15.8,
                 speaker_counts={"Speaker A": 2, "Speaker B": 1},
                 prompts_dir=str(tmp_path / "prompts"),
-                gemini_model="gemini-3.8-flash",
+                analysis_model="gemini-3.8-flash",
                 gemini_api_key="fake-key",
             )
 
@@ -271,7 +271,7 @@ def test_report_saved_to_correct_path_claude(tmp_path, sample_segments):
             audio_duration=15.8,
             speaker_counts={"Speaker A": 2, "Speaker B": 1},
             prompts_dir=str(tmp_path / "prompts"),
-            gemini_model="claude-haiku-5-5",
+            analysis_model="claude-haiku-5-5",
             anthropic_api_key="fake-key",
         )
 
@@ -296,7 +296,7 @@ def test_report_file_contains_report_body(tmp_path, sample_segments):
                 audio_duration=None,
                 speaker_counts={"Speaker A": 2, "Speaker B": 1},
                 prompts_dir=str(tmp_path / "prompts"),
-                gemini_model="gemini-3.8-flash",
+                analysis_model="gemini-3.8-flash",
                 gemini_api_key="fake-key",
             )
 
@@ -346,7 +346,7 @@ def test_report_output_does_not_contain_api_key(tmp_path, sample_segments):
                 audio_duration=None,
                 speaker_counts={"Speaker A": 2, "Speaker B": 1},
                 prompts_dir=str(tmp_path / "prompts"),
-                gemini_model="gemini-3.8-flash",
+                analysis_model="gemini-3.8-flash",
                 gemini_api_key=fake_gemini_key,
                 anthropic_api_key=fake_anthropic_key,
             )

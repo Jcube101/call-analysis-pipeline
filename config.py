@@ -133,9 +133,9 @@ class Settings:
                 "3. Add HUGGINGFACE_TOKEN=<your-token> to your .env file"
             )
 
-    def validate_for_report(self, gemini_model: str = DEFAULT_MODEL) -> None:
+    def validate_for_report(self, analysis_model: str = DEFAULT_MODEL) -> None:
         """Raise if the API key for the selected model is missing."""
-        if provider_for(gemini_model) == "anthropic":
+        if provider_for(analysis_model) == "anthropic":
             if not self.anthropic_api_key:
                 raise EnvironmentError(
                     "ANTHROPIC_API_KEY is not set in .env.\n"

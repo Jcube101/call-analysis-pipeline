@@ -293,7 +293,7 @@ def main() -> None:
                 audio_duration=audio_duration,
                 speaker_counts=dict(speaker_counts),
                 prompts_dir="prompts",
-                gemini_model=report_model,
+                analysis_model=report_model,
                 gemini_api_key=settings.gemini_api_key,
                 anthropic_api_key=settings.anthropic_api_key,
             )
@@ -478,7 +478,7 @@ def main() -> None:
                 audio_duration=audio_duration,
                 speaker_counts=dict(speaker_counts),
                 prompts_dir="prompts",
-                gemini_model=report_model,
+                analysis_model=report_model,
                 gemini_api_key=settings.gemini_api_key,
                 anthropic_api_key=settings.anthropic_api_key,
             )

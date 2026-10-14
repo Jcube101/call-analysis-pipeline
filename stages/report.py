@@ -228,7 +228,7 @@ def run(
     speaker_counts: dict[str, int],
     api_key: str = "",
     prompts_dir: str = "prompts",
-    gemini_model: str = _MODEL,
+    analysis_model: str = _MODEL,
     gemini_api_key: Optional[str] = None,
     anthropic_api_key: Optional[str] = None,
     context_hints: str = "",
@@ -236,14 +236,14 @@ def run(
     """
     Run Stage 5.
 
-    Routes to Claude or Gemini based on the gemini_model prefix.
+    Routes to Claude or Gemini based on the analysis_model's provider.
     For backwards compatibility, `api_key` is still accepted and used
     as the Gemini key when `gemini_api_key` is not provided.
 
     Returns:
         Path to the written report file.
     """
-    use_claude = provider_for(gemini_model) == "anthropic"
+    use_claude = provider_for(analysis_model) == "anthropic"
 
     if use_claude:
         _api_key = anthropic_api_key or ""
@@ -254,7 +254,7 @@ def run(
             from google import genai as _genai_module
             _genai = _genai_module
 
-    print(f"\n[Stage 5] Generating analysis report (context: {context}, model: {gemini_model})...")
+    print(f"\n[Stage 5] Generating analysis report (context: {context}, model: {analysis_model})...")
 
     instruction_prompt = _load_prompt(context, prompts_dir)
     if context_hints.strip():
@@ -279,7 +279,7 @@ def run(
         client = _genai.Client(api_key=_api_key)
         return _call_gemini(client, system_prompt, user_msg, model)
 
-    actual_model = gemini_model
+    actual_model = analysis_model
     provider = "Claude" if use_claude else "Gemini"
 
     if n_chunks == 1:
@@ -288,7 +288,7 @@ def run(
             f"## Conversation metadata\n\n{metadata_block}\n\n"
             f"## Transcript\n\n{transcript_text}"
         )
-        report_body, actual_model = _call(instruction_prompt, user_message, gemini_model)
+        report_body, actual_model = _call(instruction_prompt, user_message, analysis_model)
     else:
         print(f"[Stage 5] Transcript is large — splitting into {n_chunks} chunks...")
         partial_reports: list[str] = []
@@ -299,7 +299,7 @@ def run(
                 f"## Conversation metadata\n\n{metadata_block}\n\n"
                 f"## Transcript (part {i} of {n_chunks})\n\n{chunk}"
             )
-            partial, actual_model = _call(instruction_prompt, user_message, gemini_model)
+            partial, actual_model = _call(instruction_prompt, user_message, analysis_model)
             partial_reports.append(f"### Part {i} of {n_chunks}\n\n{partial}")
 
         print(f"[Stage 5] Synthesising {n_chunks} partial reports...")
@@ -310,7 +310,7 @@ def run(
             "Maintain the analytical focus from the original instruction."
         )
         combined_partials = "\n\n---\n\n".join(partial_reports)
-        report_body, actual_model = _call(synthesis_prompt, combined_partials, gemini_model)
+        report_body, actual_model = _call(synthesis_prompt, combined_partials, analysis_model)
 
     print(f"[Stage 5] Report generated using {actual_model}")
 
