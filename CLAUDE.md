@@ -65,6 +65,8 @@ prompts/
   user_interview.md   — analysis prompt for user/PM interviews (user-editable)
   public_interview.md — analysis prompt for public/media interviews (user-editable)
   date.md             — analysis prompt for date conversations (user-editable)
+tools/
+  merge_transcripts.py — merge two transcript JSONs (part 1 + part 2); combines metadata.warnings as "Part N: ..."
 input/           — place source audio files here (gitignored, must exist locally)
 output/          — pipeline outputs land here (gitignored, must exist locally)
 ```
@@ -348,6 +350,7 @@ Unit tests live in `tests/`:
 - `tests/test_api.py` — `get_or_recover_job()` in-memory and disk recovery, glob filter patterns, job state structure, `ALLOWED_MODELS`, the `analysis_model` field via TestClient (legacy remap, unknown fallback), the removed `gemini_model` field being ignored with one log line on both POST endpoints (alone, both sent, legacy ID not remapped), its absence from OpenAPI and `/status`, re-identification warnings end to end through a stubbed `_run_pipeline` / `_run_report_from_json` (job state, `complete`, `/reconnect`, `/status`, terminal line, JSON, .txt; ok / partial / failed; malformed uploaded warnings), API key leak prevention (job dict, /reconnect, WebSocket, SDK exceptions, .gitignore)
 - `tests/test_report.py` — prompt loading from file and fallback defaults, `warnings=` in the header and prompt (and an unchanged header without them), transcript chunking, model fallback on 503, Claude thinking-block handling, max-token truncation guards, Claude/Gemini API key validation, report output leak checks
 - `tests/test_progress.py` — the Stage 1/3 progress throttle (`stages/progress.py`): phase messages, 5% / 10 s throttling, rounding, swallowed callback errors
+- `tests/test_merge_transcripts.py` — `tools/merge_transcripts.py` via its CLI: Part N warning prefixes, no key when clean, offsets and options unchanged
 - `tests/test_models.py` — model registry shape, legacy ID remapping (with log line), unknown-value fallback, provider lookup
 - `tests/test_diarize_reid.py` — Stage 2 speaker re-identification outcome: ok, partial, failed (scikit-learn missing, exception before extraction, unreadable WAV, too few usable segments, clustering exception), the all-or-nothing label write-back, the fewer-speakers warning, and the non-UTF-8 stdout regression
 
