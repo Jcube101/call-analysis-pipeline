@@ -35,7 +35,10 @@ from __future__ import annotations
 import os
 import re
 os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "1")  # fixes torch.vmap CUDA error on PyTorch 2.5.x (pyannote wespeaker fbank)
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
+# Do not set PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb here. It stops torch
+# reusing freed blocks, which pushed Stage 2 past the 4 GB card into shared
+# memory (12x slower embeddings) and caused CUDA OOM on long files. See
+# KNOWN-ISSUES.md.
 
 import asyncio
 import gc
@@ -485,7 +488,6 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
             torch.cuda.empty_cache()
             gc.collect()
             torch.cuda.empty_cache()
-            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
         except Exception:
             pass
         time.sleep(3)
