@@ -48,6 +48,7 @@ All config (tokens, context, speaker count, transcription mode, language) lives 
 ```
 main.py          — entry point, orchestrates all stages (CLI)
 api.py           — FastAPI HTTP + WebSocket wrapper (programmatic access)
+start_server.ps1 — starts/stops the API on port 8010 with pre-checks (Windows PowerShell)
 config.py        — Settings dataclass, loads .env via python-dotenv
 models.py        — Stage 5 model registry (IDs, labels, providers, default, fallbacks, legacy aliases)
 stages/
@@ -239,6 +240,10 @@ uvicorn api:app --host 0.0.0.0 --port 8010
 **Ports:** 8010 is this project's only port (registered in `dev-meta/PORTS.md`). Every other port in that registry belongs to another project. Never bind one of them for testing, even if it looks free locally. For tests, use FastAPI's in-process `TestClient` (as `tests/test_api.py` does), or start a throwaway server on an OS-assigned ephemeral port: `uvicorn api:app --host 127.0.0.1 --port 0`, then read the actual port from the `Uvicorn running on http://127.0.0.1:<port>` log line. Leave 8010 to the live server.
 
 Requires `fastapi`, `uvicorn`, `python-multipart` (not in `requirements.txt` — install separately or add them).
+
+### Starting the server
+
+Use `.\start_server.ps1` (repo root) rather than typing the command. It cds to the repo, sets `PYTHONIOENCODING=utf-8` and runs `python -m uvicorn api:app --host 0.0.0.0 --port 8010` in the foreground. It uses the global Python 3.12 if present. Pre-checks: it refuses to start if port 8010 is held (printing PID, name and command line), and it warns when commit headroom is below 6 GB (`$MinFreeCommitGB`; a job peaks at ~5.4 GB commit, see KNOWN-ISSUES.md §1). It checks commit rather than free physical RAM because this box runs jobs fine at ~1 GB available physical. `-LogFile` also appends to `output\server_8010.log` (UTF-8, no BOM, with session start/exit markers). In that mode it sets `PYTHONUNBUFFERED=1` so piped output stays live. `-Stop` kills the port-8010 listener only if its command line matches `uvicorn`, `api:app` and `--port 8010`. It refuses anything else, including `python api.py`. To test the script, run a copy with `$Port` replaced by an OS-assigned port. Never point it at another PORTS.md port, and do not `-Stop` the live server without asking.
 
 ### Endpoints
 

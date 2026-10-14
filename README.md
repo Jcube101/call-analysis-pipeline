@@ -270,10 +270,28 @@ pip install fastapi uvicorn python-multipart
 Start the full stack in two terminals:
 
 **Terminal 1 — API server:**
-```bash
-cd call-analysis-pipeline
-python api.py
+```powershell
+.\start_server.ps1
 ```
+
+### Starting the server
+
+`start_server.ps1` (repo root, Windows PowerShell) runs `uvicorn api:app --host 0.0.0.0 --port 8010` from the repo folder with `PYTHONIOENCODING=utf-8`, in the foreground so the output is live. Ctrl+C stops it.
+
+Before starting it:
+- refuses to start if anything already listens on port 8010, and prints that process's PID, name and command line
+- prints free RAM and commit headroom (RAM + page file), and warns below 6 GB of commit. A full job peaks at about 5.4 GB, and Windows fails allocations on commit, not on physical RAM (see KNOWN-ISSUES.md)
+- uses the global Python 3.12 if present, and checks that it can import `uvicorn` and `fastapi`
+
+```powershell
+.\start_server.ps1            # visible window, no log file
+.\start_server.ps1 -LogFile   # also append output to output\server_8010.log (UTF-8)
+.\start_server.ps1 -Stop      # stop the server on 8010, only if it is this project's uvicorn
+```
+
+`-Stop` refuses any process whose command line does not show `uvicorn ... api:app --port 8010`, including a server started with `python api.py`. Stop that one with Ctrl+C in its window.
+
+If scripts are blocked, run `powershell -ExecutionPolicy Bypass -File .\start_server.ps1`.
 
 **Terminal 2 — ngrok tunnel:**
 ```bash
