@@ -22,11 +22,13 @@ import os
 from datetime import datetime
 from typing import Optional
 
+from models import DEFAULT_MODEL, FALLBACK_MODELS, provider_for
+
 # Loaded lazily so the import doesn't fail when --report is not used
 _genai = None
 
 # Default model for report generation
-_MODEL = "claude-haiku-4-5-20251001"
+_MODEL = DEFAULT_MODEL
 
 # Max characters per chunk sent to Gemini (~1M token context, cap at 500k chars ~125k tokens)
 _CHUNK_CHARS = 500_000
@@ -122,8 +124,12 @@ def _build_metadata_block(
     return "\n".join(lines)
 
 
-GEMINI_FALLBACK_MODEL = "gemini-3-flash-preview"
-CLAUDE_FALLBACK_MODEL = "claude-haiku-4-5-20251001"
+GEMINI_FALLBACK_MODEL = FALLBACK_MODELS["google"]
+CLAUDE_FALLBACK_MODEL = FALLBACK_MODELS["anthropic"]
+
+# Output budget per Claude request. Thinking tokens count against it too, so
+# this is well above report length; kept under the SDK non-streaming ceiling.
+_CLAUDE_MAX_TOKENS = 16_000
 
 
 def _call_gemini_model(client, system_prompt: str, user_message: str, model: str) -> str:
@@ -133,6 +139,9 @@ def _call_gemini_model(client, system_prompt: str, user_message: str, model: str
         model=model,
         contents=full_prompt,
     )
+    finish = getattr(response.candidates[0], "finish_reason", None) if response.candidates else None
+    if finish is not None and "MAX_TOKENS" in str(finish):
+        raise RuntimeError(f"{model} hit its output token limit; report would be truncated")
     return response.text
 
 
@@ -153,11 +162,16 @@ def _call_claude_model(api_key: str, system_prompt: str, user_message: str, mode
     client = anthropic.Anthropic(api_key=api_key)
     message = client.messages.create(
         model=model,
-        max_tokens=4096,
+        max_tokens=_CLAUDE_MAX_TOKENS,
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
     )
-    return message.content[0].text
+    # Newer models may return thinking blocks ahead of the text, so take
+    # every text block rather than assuming content[0] is text.
+    text = "".join(b.text for b in message.content if b.type == "text")
+    if message.stop_reason == "max_tokens":
+        raise RuntimeError(f"{model} hit max_tokens={_CLAUDE_MAX_TOKENS}; report would be truncated")
+    return text
 
 
 def _call_claude(api_key: str, system_prompt: str, user_message: str, model: str) -> tuple[str, str]:
@@ -229,7 +243,7 @@ def run(
     Returns:
         Path to the written report file.
     """
-    use_claude = gemini_model.startswith("claude-")
+    use_claude = provider_for(gemini_model) == "anthropic"
 
     if use_claude:
         _api_key = anthropic_api_key or ""

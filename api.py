@@ -59,6 +59,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from config import Settings, settings
+from models import ALLOWED_MODELS, DEFAULT_MODEL, resolve_model
 
 # Same cp1252 problem main.py has: the stage modules this server runs print
 # characters cp1252 cannot encode (Stage 2's ">=" in its feature-extraction
@@ -73,12 +74,8 @@ for _stream in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError, OSError):
         pass
 
-ALLOWED_GEMINI_MODELS = [
-    "claude-haiku-4-5-20251001",
-    "claude-sonnet-4-6",
-    "gemini-3-flash-preview",
-    "gemini-3.1-pro-preview",
-]
+# Kept under its old name for existing imports; the registry lives in models.py
+ALLOWED_GEMINI_MODELS = ALLOWED_MODELS
 
 ALLOWED_CONTEXTS = [
     "friend",
@@ -470,7 +467,7 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
         # message always carries the finished report content.
         generate_report = bool(job.get("generate_report", False))
         if generate_report:
-            gemini_model = job.get("gemini_model", "claude-haiku-4-5-20251001")
+            gemini_model = job.get("gemini_model", DEFAULT_MODEL)
             settings.validate_for_report(gemini_model)
             _push_progress(job_id, 5, "AI Report", "Stage 5: Generating analysis report...")
             speaker_counts = Counter(s["speaker"] for s in transcribed_segments)
@@ -580,7 +577,7 @@ def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
             )
             files["json"] = relabelled
 
-        gemini_model = job.get("gemini_model", "claude-haiku-4-5-20251001")
+        gemini_model = job.get("gemini_model", DEFAULT_MODEL)
         settings.validate_for_report(gemini_model)
         _push_progress(job_id, 5, "AI Report", "Stage 5: Generating analysis report...")
         speaker_counts = Counter(s["speaker"] for s in transcribed_segments)
@@ -705,7 +702,7 @@ async def analyse(
     generate_report: bool = Form(False),
     skip_preprocess: bool = Form(False),
     whisper_model: Optional[str] = Form(None),
-    gemini_model: str = Form("claude-haiku-4-5-20251001"),
+    gemini_model: str = Form(DEFAULT_MODEL),
     context_hints: str = Form(""),
 ):
     # Preflight before anything is written to disk or queued, so a broken
@@ -713,8 +710,7 @@ async def analyse(
     if not skip_preprocess:
         _check_ffmpeg()
 
-    if gemini_model not in ALLOWED_GEMINI_MODELS:
-        gemini_model = "claude-haiku-4-5-20251001"
+    gemini_model = resolve_model(gemini_model)
     if context is not None and context not in ALLOWED_CONTEXTS:
         context = "friend"
 
@@ -772,11 +768,10 @@ async def report_from_json(
     file: UploadFile = File(...),
     context: Optional[str] = Form(None),
     speaker_names: Optional[str] = Form(None),
-    gemini_model: str = Form("claude-haiku-4-5-20251001"),
+    gemini_model: str = Form(DEFAULT_MODEL),
     context_hints: str = Form(""),
 ):
-    if gemini_model not in ALLOWED_GEMINI_MODELS:
-        gemini_model = "claude-haiku-4-5-20251001"
+    gemini_model = resolve_model(gemini_model)
     if context is not None and context not in ALLOWED_CONTEXTS:
         context = "friend"
 

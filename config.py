@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 from dotenv import load_dotenv
 
+from models import DEFAULT_MODEL, provider_for
+
 load_dotenv()
 
 VALID_CONTEXTS = {"friend", "work", "interview", "work_interview", "user_interview", "date", "public_interview"}
@@ -131,9 +133,9 @@ class Settings:
                 "3. Add HUGGINGFACE_TOKEN=<your-token> to your .env file"
             )
 
-    def validate_for_report(self, gemini_model: str = "claude-haiku-4-5-20251001") -> None:
+    def validate_for_report(self, gemini_model: str = DEFAULT_MODEL) -> None:
         """Raise if the API key for the selected model is missing."""
-        if gemini_model.startswith("claude-"):
+        if provider_for(gemini_model) == "anthropic":
             if not self.anthropic_api_key:
                 raise EnvironmentError(
                     "ANTHROPIC_API_KEY is not set in .env.\n"
