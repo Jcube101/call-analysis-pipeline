@@ -432,12 +432,29 @@ def _heartbeat_worker(job_id: str, stop: threading.Event, interval: float = 10.0
     while not stop.wait(interval):
         _push_progress(job_id, 5, "AI Report", "Stage 5: Generating analysis report...")
 
+def _log_memory(job_id: str, when: str) -> None:
+    """Print free VRAM and this process's commit at a job boundary.
+
+    The server is long-lived, so anything a job leaves on the GPU or in RAM is
+    still there when the next job's Stage 2 starts. Comparing one job's "end"
+    line with the next job's "start" line shows whether memory is released.
+    """
+    try:
+        vram = diarize.vram_status() or "no CUDA"
+        commit = diarize._process_commit_mb()
+        ram = f"{commit / 1024:.2f} GB" if commit is not None else "n/a"
+        print(f"[job {job_id}] Memory at job {when}: VRAM {vram}; process commit {ram}", flush=True)
+    except Exception as e:
+        print(f"[job {job_id}] Memory at job {when}: unavailable ({e})", flush=True)
+
+
 def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
     """Run the full pipeline (Stages 1–4, optionally 5). Executes in the thread pool."""
     job = jobs[job_id]
     job["status"] = "running"
     output_dir = f"output/jobs/{job_id}"
     started_at = time.time()
+    _log_memory(job_id, "start")
 
     try:
         _configure_settings(params)
@@ -583,6 +600,9 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
         job["error"] = str(exc)
         print(f"[error] Pipeline crashed: {traceback.format_exc()}")
         _push_error(job_id, str(exc))
+
+    finally:
+        _log_memory(job_id, "end")
 
 
 def _run_report_from_json(job_id: str, json_path: str, params: dict) -> None:
