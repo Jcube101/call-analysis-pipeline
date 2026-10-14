@@ -14,14 +14,17 @@ from __future__ import annotations
 
 import gc
 import os
+import sys
 import time
 import warnings
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message="torchcodec is not installed", category=UserWarning)
     from pyannote.audio import Pipeline
+
+from tqdm import tqdm
 
 from config import settings
 
@@ -210,8 +213,8 @@ class _PhaseMonitor:
     and rich treats a non-TTY stdout as non-interactive: under uvicorn with
     stdout redirected to a file it printed nothing while the pipeline ran,
     then one static snapshot of finished bars when it returned. This prints
-    plain lines as it goes -- one per phase change, plus a throttled progress
-    line while a phase reports completed/total.
+    plain lines as it goes -- one per phase change -- and a tqdm bar, like
+    Stages 1 and 3, while a phase reports completed/total.
 
     pyannote 3.4.0 calls the hook in this order: "segmentation" (progress,
     then one call carrying the artifact), "speaker_counting" (a single call,
@@ -221,19 +224,33 @@ class _PhaseMonitor:
     gap is reported as a phase of its own.
 
     Artifacts are never stored -- the hook only reads step names and counts.
+
+    `progress`, if given, is called as progress(phase, percent, message) on
+    every phase change and, while a phase reports counts, at most every 5%
+    and 10 s. `percent` is the rounded percent within the current phase, 0
+    when a counted phase (segmentation, embeddings) begins, and None for
+    phases that report no counts. A phase is finished only when the next one begins. Errors the
+    callback raises are swallowed; it must not be able to fail diarization.
     """
 
-    _PROGRESS_STEP = 0.05     # a progress line every 5% ...
+    _PROGRESS_STEP = 0.05     # a progress callback every 5% ...
     _PROGRESS_MIN_GAP = 10.0  # ... but no more often than every 10 s
     _UNITS = {"segmentation": "chunks", "embeddings": "batches"}
+    _BAR_UNITS = {"segmentation": "chunk", "embeddings": "batch"}
+    # pyannote reports every batch, and tqdm redraws up to 10x a second. A file
+    # can't overwrite a line, so under uvicorn with output piped every redraw is
+    # appended to the log; redraw at most every 5 s there.
+    _BAR_MININTERVAL_NON_TTY = 5.0
 
-    def __init__(self) -> None:
+    def __init__(self, progress: Optional[Callable[[str, Optional[int], str], None]] = None) -> None:
+        self._callback = progress
         self.phase: Optional[str] = None
         self._phase_start = 0.0
         self._last_line = 0.0
         self._last_fraction = 0.0
         self._pending_start: Optional[float] = None
         self._created = time.monotonic()
+        self._bar: Optional[tqdm] = None
         self.durations: list[tuple[str, float]] = []
 
     def begin(self, phase: str, started: Optional[float] = None, announce: bool = True) -> None:
@@ -246,6 +263,7 @@ class _PhaseMonitor:
         self._last_fraction = 0.0
         if announce:
             print(f"[Stage 2] Phase: {phase}", flush=True)
+        self._notify(phase, 0 if phase in self._UNITS else None, f"Phase: {phase}")
         vram = vram_status()
         if vram:
             print(f"[Stage 2] VRAM at {phase} start: {vram}", flush=True)
@@ -253,7 +271,18 @@ class _PhaseMonitor:
     def end(self) -> None:
         self._close(time.monotonic())
 
+    def _notify(self, phase: str, percent: Optional[int], message: str) -> None:
+        if self._callback is None:
+            return
+        try:
+            self._callback(phase, percent, message)
+        except Exception as e:
+            print(f"[Stage 2] Progress callback failed (ignored): {e}", flush=True)
+
     def _close(self, now: float) -> None:
+        if self._bar is not None:
+            self._bar.close()
+            self._bar = None
         if self.phase is not None:
             self.durations.append((self.phase, now - self._phase_start))
         self.phase = None
@@ -287,10 +316,25 @@ class _PhaseMonitor:
         elif step_name == "discrete_diarization":
             self.end()
 
+    def _update_bar(self, step_name: str, completed: int, total: int) -> None:
+        if self._bar is None:
+            tty = hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
+            self._bar = tqdm(
+                total=total,
+                desc=f"  {step_name.capitalize()}",
+                unit=self._BAR_UNITS.get(step_name, "step"),
+                mininterval=0.1 if tty else self._BAR_MININTERVAL_NON_TTY,
+            )
+        self._bar.update(completed - self._bar.n)
+
     def _progress(self, step_name: str, completed: int, total: Optional[int]) -> None:
         if not total:
             return
         completed = min(completed, total)  # Inference overshoots on its last batch
+        try:
+            self._update_bar(step_name, completed, total)
+        except Exception:
+            pass  # the bar is cosmetic
         fraction = completed / total
         now = time.monotonic()
         if (
@@ -302,11 +346,14 @@ class _PhaseMonitor:
         elapsed = now - self._phase_start
         left = elapsed * (1 - fraction) / fraction if fraction > 0 else 0.0
         unit = self._UNITS.get(step_name, "steps")
-        print(
-            f"[Stage 2]   {step_name} {fraction:.0%} ({completed}/{total} {unit}), "
-            f"{_fmt_elapsed(elapsed)} elapsed, ~{_fmt_elapsed(left)} left",
-            flush=True,
+        percent = round(fraction * 100)
+        line = (
+            f"{step_name} {percent}% ({completed}/{total} {unit}), "
+            f"{_fmt_elapsed(elapsed)} elapsed, ~{_fmt_elapsed(left)} left"
         )
+        # Not printed: the bar shows this, and a line printed into a bar that
+        # is still open would land mid-line in a piped log.
+        self._notify(self.phase or step_name, percent, line)
         self._last_line = now
         self._last_fraction = fraction
 
@@ -449,6 +496,7 @@ def run(
     clean_wav_path: str,
     output_dir: str,
     num_speakers: Optional[int] = None,
+    progress: Optional[Callable[[str, Optional[int], str], None]] = None,
 ) -> list[dict]:
     """
     Run Stage 2.
@@ -457,6 +505,9 @@ def run(
         clean_wav_path: Path to the Stage-1 cleaned WAV.
         output_dir:      Directory for any intermediate outputs.
         num_speakers:    Exact speaker count, or None for auto-detection.
+        progress:        Optional callback(phase, percent_or_None, message),
+                         called on each phase change and throttled progress
+                         line. See _PhaseMonitor. Errors in it are ignored.
 
     Returns:
         List of segment dicts:
@@ -465,7 +516,7 @@ def run(
     settings.validate_for_diarization()
     _check_memory_headroom(clean_wav_path)
 
-    monitor = _PhaseMonitor()
+    monitor = _PhaseMonitor(progress)
     monitor.begin("model load", announce=False)
 
     print(f"\n[Stage 2] Loading diarization pipeline (pyannote/speaker-diarization-3.1)...")

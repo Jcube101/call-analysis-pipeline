@@ -130,6 +130,9 @@ threading.excepthook = _handle_thread_exception
 jobs: dict[str, dict] = {}
 connections: dict[str, WebSocket] = {}
 executor = ThreadPoolExecutor(max_workers=1)
+# Sends Stage 2 sub-progress to the socket so a slow or dead client can never
+# stall the diarization thread. One worker keeps sends in order.
+_progress_sender = ThreadPoolExecutor(max_workers=1, thread_name_prefix="progress-send")
 _loop: Optional[asyncio.AbstractEventLoop] = None
 
 
@@ -376,7 +379,11 @@ def _push_ws(job_id: str, payload: dict) -> None:
     job = jobs.get(job_id)
     if job is not None:
         job["message_queue"].append(payload)
+    _send_ws(job_id, payload)
 
+
+def _send_ws(job_id: str, payload: dict) -> None:
+    """Deliver one message to the live WebSocket, if any. Blocks for up to 5 s."""
     ws = connections.get(job_id)
     if ws is None or _loop is None:
         return
@@ -388,13 +395,71 @@ def _push_ws(job_id: str, payload: dict) -> None:
         pass  # message is safe in queue; client can replay via /reconnect
 
 
-def _push_progress(job_id: str, stage: int, stage_name: str, message: str) -> None:
+def _progress_payload(
+    job_id: str, stage: int, stage_name: str, message: str,
+    phase: Optional[str] = None, percent: Optional[int] = None, sub_progress: bool = False,
+) -> dict:
+    """Record progress on the job and build the message.
+
+    Ordinary stage messages keep the original four-field shape. Stage 2
+    sub-progress (sub_progress=True) adds "phase" and "percent"; percent is
+    null for phases that report no counts.
+    """
     job = jobs.get(job_id)
     if job is not None:
         job["current_stage"] = stage
         job["stage_name"] = stage_name
         job["progress_message"] = message
-    _push_ws(job_id, {"type": "progress", "stage": stage, "stage_name": stage_name, "message": message})
+    payload = {"type": "progress", "stage": stage, "stage_name": stage_name, "message": message}
+    if sub_progress:
+        payload["phase"] = phase
+        payload["percent"] = percent
+    return payload
+
+
+def _push_progress(job_id: str, stage: int, stage_name: str, message: str) -> None:
+    _push_ws(job_id, _progress_payload(job_id, stage, stage_name, message))
+
+
+def _send_if_latest(job_id: str, payload: dict) -> None:
+    """Background send of a queued message, skipped once a newer one is queued.
+
+    A send can block for up to 5 s, so sends can fall behind the pipeline. A
+    message that has been superseded is not sent: a stale "segmentation 40%"
+    must not reach the client after "Done". It stays in the message queue,
+    in order, for replay.
+    """
+    try:
+        job = jobs.get(job_id)
+        if job is not None:
+            queue = job["message_queue"]
+            if queue and queue[-1] is not payload:
+                return
+        _send_ws(job_id, payload)
+    except Exception:
+        pass
+
+
+def _diarize_progress(job_id: str):
+    """Callback for diarize.run(progress=...). Never blocks, never raises.
+
+    Queueing is a list append on the diarization thread; the socket send runs
+    on _progress_sender. diarize's own throttle (5 % / 10 s) and phase changes
+    bound how often this is called.
+    """
+    def callback(phase: str, percent: Optional[int], message: str) -> None:
+        try:
+            payload = _progress_payload(
+                job_id, 2, "Diarize", f"Speaker diarization — {message}",
+                phase=phase, percent=percent, sub_progress=True,
+            )
+            job = jobs.get(job_id)
+            if job is not None:
+                job["message_queue"].append(payload)
+            _progress_sender.submit(_send_if_latest, job_id, payload)
+        except Exception:
+            pass
+    return callback
 
 
 def _push_complete(job_id: str) -> None:
@@ -476,6 +541,7 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
             clean_wav_path=clean_wav,
             output_dir=output_dir,
             num_speakers=settings.num_speakers,
+            progress=_diarize_progress(job_id),
         )
         if settings.speaker_names:
             segments = _apply_speaker_names(segments, settings.speaker_names)

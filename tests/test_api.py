@@ -1093,3 +1093,107 @@ def test_report_from_json_drops_prior_report_entry(client, tmp_path):
         assert "report_path" not in new_job
     finally:
         jobs.pop(job_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 sub-progress (diarize.run(progress=...) -> WebSocket)
+# ---------------------------------------------------------------------------
+
+import api as _api
+
+
+def _progress_job(job_id):
+    jobs[job_id] = {"job_id": job_id, "status": "running", "message_queue": []}
+    return jobs[job_id]
+
+
+def test_push_progress_shape_is_unchanged(monkeypatch):
+    job = _progress_job("prog-shape")
+    monkeypatch.setattr(_api, "_send_ws", lambda job_id, payload: None)
+    try:
+        _api._push_progress("prog-shape", 2, "Diarize", "Speaker diarization…")
+        assert job["message_queue"] == [
+            {"type": "progress", "stage": 2, "stage_name": "Diarize", "message": "Speaker diarization…"}
+        ]
+    finally:
+        jobs.pop("prog-shape", None)
+
+
+def test_diarize_progress_adds_phase_and_percent_only(monkeypatch):
+    job = _progress_job("prog-sub")
+    monkeypatch.setattr(_api, "_send_ws", lambda job_id, payload: None)
+    try:
+        cb = _api._diarize_progress("prog-sub")
+        cb("segmentation", 45, "segmentation 45% (12/27 chunks), 0:40 elapsed, ~0:49 left")
+        cb("clustering", None, "Phase: clustering")
+        first, second = job["message_queue"]
+        assert first == {
+            "type": "progress", "stage": 2, "stage_name": "Diarize",
+            "message": "Speaker diarization — segmentation 45% (12/27 chunks), 0:40 elapsed, ~0:49 left",
+            "phase": "segmentation", "percent": 45,
+        }
+        assert second["percent"] is None and second["phase"] == "clustering"
+        assert job["progress_message"] == second["message"]
+        assert job["current_stage"] == 2
+    finally:
+        jobs.pop("prog-sub", None)
+
+
+def test_diarize_progress_does_not_block_on_slow_socket(monkeypatch):
+    _progress_job("prog-slow")
+    sent = []
+
+    def slow_send(job_id, payload):
+        time.sleep(1.0)
+        sent.append(payload)
+
+    monkeypatch.setattr(_api, "_send_ws", slow_send)
+    try:
+        cb = _api._diarize_progress("prog-slow")
+        t0 = time.monotonic()
+        cb("segmentation", 0, "Phase: segmentation")
+        cb("segmentation", 10, "segmentation 10%")
+        assert time.monotonic() - t0 < 0.2
+        _api._progress_sender.submit(lambda: None).result(timeout=5)  # drain
+        # The first is sent only if its send started before the second was
+        # queued; the latest always arrives, last.
+        assert [p["percent"] for p in sent] in ([0, 10], [10])
+    finally:
+        jobs.pop("prog-slow", None)
+
+
+def test_superseded_progress_is_not_sent(monkeypatch):
+    job = _progress_job("prog-stale")
+    sent = []
+    monkeypatch.setattr(_api, "_send_ws", lambda job_id, payload: sent.append(payload))
+    try:
+        stale = {"type": "progress", "stage": 2, "percent": 40}
+        job["message_queue"].append(stale)
+        job["message_queue"].append({"type": "progress", "stage": 2, "message": "Done"})
+        _api._send_if_latest("prog-stale", stale)
+        assert sent == []
+        assert stale in job["message_queue"]  # still replayable, in order
+    finally:
+        jobs.pop("prog-stale", None)
+
+
+def test_diarize_progress_swallows_errors(monkeypatch):
+    _progress_job("prog-err")
+
+    class Broken:
+        def submit(self, *a, **k):
+            raise RuntimeError("executor shut down")
+
+    monkeypatch.setattr(_api, "_progress_sender", Broken())
+    try:
+        _api._diarize_progress("prog-err")("embeddings", 5, "x")  # must not raise
+        _api._diarize_progress("no-such-job")("embeddings", 5, "x")
+    finally:
+        jobs.pop("prog-err", None)
+
+
+def test_send_if_latest_swallows_send_errors(monkeypatch):
+    def boom(job_id, payload):
+        raise RuntimeError("socket gone")
+    monkeypatch.setattr(_api, "_send_ws", boom)
+    _api._send_if_latest("no-such-job", {"type": "progress"})  # must not raise
