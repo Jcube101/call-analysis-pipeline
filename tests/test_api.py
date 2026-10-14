@@ -1482,3 +1482,147 @@ def test_pipeline_passes_reid_warnings_to_stage5(client, monkeypatch):
         assert calls[0]["warnings"] == expected
     finally:
         jobs.pop(job_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Whisper release after each job (RELEASE_WHISPER_AFTER_JOB)
+# ---------------------------------------------------------------------------
+
+class _FakeWhisper:
+    """Stands in for transcribe.model_loaded() / release_model()."""
+
+    def __init__(self, release_error=None):
+        self.loaded = False
+        self.releases = 0
+        self.release_error = release_error
+
+    def model_loaded(self):
+        return self.loaded
+
+    def release_model(self):
+        self.releases += 1
+        if self.release_error is not None:
+            raise self.release_error
+        self.loaded = False
+        return (3.16 * 2 ** 30, 4.0 * 2 ** 30)
+
+
+def _stub_whisper(monkeypatch, release_on=True, release_error=None, stage3_error=None):
+    """Stub Stages 2-3 plus the Whisper release hooks; Stage 3 marks the model loaded."""
+    _stub_heavy_stages(monkeypatch, _outcome("ok"))
+    fake = _FakeWhisper(release_error)
+
+    def fake_transcribe(clean_wav_path, segments, **kwargs):
+        fake.loaded = True
+        if stage3_error is not None:
+            raise stage3_error
+        return [dict(s, text=f"line {i}") for i, s in enumerate(segments)]
+
+    monkeypatch.setattr(_api.transcribe, "run", fake_transcribe, raising=False)
+    monkeypatch.setattr(_api.transcribe, "model_loaded", fake.model_loaded, raising=False)
+    monkeypatch.setattr(_api.transcribe, "release_model", fake.release_model, raising=False)
+    # _configure_settings() resets settings from this snapshot at job start.
+    monkeypatch.setitem(_api._default_settings, "release_whisper_after_job", release_on)
+    return fake
+
+
+def _run_job(client):
+    job_id, job = _post_analyse(client)
+    input_path = next(
+        os.path.join(job["output_dir"], f) for f in os.listdir(job["output_dir"])
+        if f.startswith("input.")
+    )
+    _api._run_pipeline(job_id, input_path, job["params"])
+    return job_id, job
+
+
+def test_whisper_released_after_complete(client, monkeypatch, capsys):
+    fake = _stub_whisper(monkeypatch)
+    job_id, job = _run_job(client)
+    try:
+        assert job["status"] == "complete", job.get("error")
+        assert fake.releases == 1
+        assert fake.loaded is False
+        out = capsys.readouterr().out
+        before = f"[job {job_id}] Releasing Whisper model..."
+        after = f"[job {job_id}] Whisper model released; VRAM free 3.16 of 4.00 GB"
+        assert before in out and after in out
+        # After the completion summary, before the job-end memory line.
+        assert out.index(f"[job {job_id}] Pipeline complete") < out.index(before) < out.index(after)
+        assert out.index(after) < out.index(f"[job {job_id}] Memory at job end")
+        # The complete message went out before the release.
+        assert [m["type"] for m in job["message_queue"]][-1] == "complete"
+    finally:
+        jobs.pop(job_id, None)
+
+
+def test_whisper_release_happens_after_push_complete(client, monkeypatch):
+    fake = _stub_whisper(monkeypatch)
+    order = []
+    real_push = _api._push_complete
+    monkeypatch.setattr(_api, "_push_complete", lambda jid: (order.append("complete"), real_push(jid)))
+    real_release = fake.release_model
+    monkeypatch.setattr(_api.transcribe, "release_model",
+                        lambda: (order.append("release"), real_release())[1], raising=False)
+    job_id, job = _run_job(client)
+    try:
+        assert order == ["complete", "release"]
+    finally:
+        jobs.pop(job_id, None)
+
+
+def test_whisper_released_when_stage3_fails_after_load(client, monkeypatch, capsys):
+    fake = _stub_whisper(monkeypatch, stage3_error=RuntimeError("CUDA out of memory"))
+    job_id, job = _run_job(client)
+    try:
+        assert job["status"] == "error"
+        assert fake.releases == 1
+        out = capsys.readouterr().out
+        assert f"[job {job_id}] Releasing Whisper model..." in out
+        assert f"[job {job_id}] Whisper model released; VRAM free" in out
+    finally:
+        jobs.pop(job_id, None)
+
+
+def test_whisper_not_released_when_never_loaded(client, monkeypatch, capsys):
+    fake = _stub_whisper(monkeypatch)
+
+    def failing_diarize(*a, **k):
+        raise RuntimeError("Stage 2 broke")
+
+    monkeypatch.setattr(_api.diarize, "run", failing_diarize, raising=False)
+    job_id, job = _run_job(client)
+    try:
+        assert job["status"] == "error"
+        assert fake.releases == 0
+        assert "Releasing Whisper model" not in capsys.readouterr().out
+    finally:
+        jobs.pop(job_id, None)
+
+
+def test_whisper_kept_when_switched_off(client, monkeypatch, capsys):
+    fake = _stub_whisper(monkeypatch, release_on=False)
+    job_id, job = _run_job(client)
+    try:
+        assert job["status"] == "complete", job.get("error")
+        assert fake.releases == 0
+        assert fake.loaded is True
+        assert "Releasing Whisper model" not in capsys.readouterr().out
+    finally:
+        jobs.pop(job_id, None)
+
+
+@pytest.mark.parametrize("error", [RuntimeError("driver said no"), SystemExit(1)])
+def test_whisper_release_error_is_logged_not_raised(client, monkeypatch, capsys, error):
+    fake = _stub_whisper(monkeypatch, release_error=error)
+    job_id, job = _run_job(client)  # must return normally, even for SystemExit
+    try:
+        assert job["status"] == "complete"
+        assert fake.releases == 1
+        out = capsys.readouterr().out
+        assert f"[job {job_id}] Releasing Whisper model..." in out
+        assert f"[job {job_id}] Whisper model released" not in out
+        assert f"[job {job_id}] Whisper model release failed (ignored): {error!r}" in out
+        assert f"[job {job_id}] Memory at job end" in out
+    finally:
+        jobs.pop(job_id, None)

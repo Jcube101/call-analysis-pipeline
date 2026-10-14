@@ -173,7 +173,7 @@ Produces fine-grained sentence-level output. ~1x real-time on GTX 1650 for a 10-
 
 Same model and device setup. Merges consecutive same-speaker diarization segments into "turns" (gap ≤ 1 s), then makes one `model.transcribe()` call per turn. Produces one output segment per speaker turn — 10-20x fewer Whisper calls than accurate mode on long recordings, while preserving speaker-accurate boundaries (turns are built from diarization, not from Whisper's internal chunking).
 
-**CUDA teardown fix:** A module-level `_active_model` reference keeps the `WhisperModel` alive until process exit. Without it, ctranslate2's `__del__` calls `exit()` when the model is garbage-collected mid-process on Windows.
+**Model lifetime:** `run()` keeps the `WhisperModel` in the module-level `_active_model`. The API server frees it after each job with `release_model()` (off with `RELEASE_WHISPER_AFTER_JOB=0`); the CLI leaves it to process exit. It used to be held until exit because of a March 2026 ctranslate2 teardown crash that no longer reproduces on the pinned versions — see KNOWN-ISSUES.md §2.
 
 **Output:** Segment list extended with `"text"`, `"confidence"`, and optionally `"words"` per segment.
 

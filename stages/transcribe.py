@@ -26,6 +26,7 @@ bounded by the longest single segment rather than by recording length.
 
 from __future__ import annotations
 
+import gc
 import math
 import os
 from typing import Optional
@@ -38,10 +39,12 @@ from tqdm import tqdm
 from config import settings
 from stages.progress import PhaseProgress, ProgressCallback
 
-# Module-level reference keeps the model alive until process exit.
-# ctranslate2's CUDA cleanup calls exit() when triggered mid-process on
-# Windows — holding the reference here defers cleanup to process shutdown
-# where it is handled safely.
+# Module-level reference to the loaded model. In March 2026 (torch 2.1.0+cu121,
+# ctranslate2 unrecorded) freeing the model mid-process silently ended the
+# process, so this held it until exit. That could not be reproduced on
+# ctranslate2 4.8.2 / faster-whisper 1.2.1 / torch 2.5.1+cu124 (KNOWN-ISSUES.md
+# §2), so the API server now calls release_model() after each job. Never free
+# it inside run() or mid-job; the CLI just lets process exit clean it up.
 _active_model = None
 
 # Whisper expects 16 kHz mono float32
@@ -331,7 +334,7 @@ def run(
     print(f"\n[Stage 3] Loading faster-whisper '{model_name}' on {device} (downloads on first run)...")
     global _active_model
     model = WhisperModel(model_name, device=device, compute_type=compute_type)
-    _active_model = model  # prevent GC / CUDA teardown until process exit
+    _active_model = model  # held until release_model() (API, after the job) or process exit
     print(f"[Stage 3] Model loaded. Running in '{mode}' mode{wt_note} on {len(segments)} segment(s)...")
 
     # The clean WAV stays on disk; segments are read from it on demand.
@@ -348,3 +351,26 @@ def run(
 
     print(f"[Stage 3] Transcription complete. {len(transcribed)} segment(s) produced.")
     return transcribed
+
+
+def model_loaded() -> bool:
+    """True while a WhisperModel is held in _active_model."""
+    return _active_model is not None
+
+
+def release_model() -> Optional[tuple[int, int]]:
+    """Drop the held model and return its VRAM to the driver.
+
+    Call only between jobs, never while run() may be using the model.
+    Returns (free, total) bytes from torch.cuda.mem_get_info() afterwards,
+    or None without CUDA.
+    """
+    global _active_model
+    _active_model = None
+    gc.collect()
+    import torch
+    if not torch.cuda.is_available():
+        return None
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+    return torch.cuda.mem_get_info()

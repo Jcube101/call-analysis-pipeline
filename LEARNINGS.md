@@ -197,20 +197,20 @@ Peak RAM stays at ~350 MB regardless of recording length.
 
 A collection of issues that only manifest on Windows or in Windows-hosted GPU environments.
 
-### ctranslate2 CUDA teardown calls exit() on garbage collection
+### Freeing the Whisper model mid-process — March 2026 crash, not reproducible now
 
-**Problem:** When `WhisperModel` is garbage-collected mid-process on Windows, ctranslate2's `__del__` calls `exit()`, crashing the server.
+**Problem (2026-03-26):** On the CLI, with torch 2.1.0+cu121 and an unrecorded ctranslate2 version, a `del model` at the end of `transcribe.run()` ended the process silently: a debug print right after the `del` never appeared. It was attributed to ctranslate2's `__del__` calling `exit()`, which was never confirmed, and no error text or exit code was recorded.
 
-**Fix:** Keep a module-level reference in `transcribe.py`:
-```python
-_active_model = None  # module-level
-# inside run():
-model = WhisperModel(...)
-_active_model = model  # prevents GC
-```
-Do not add `del model` anywhere inside `transcribe.run()`.
+**Old fix:** keep the model in the module global `_active_model` until process exit. In the long-lived API server, that left ~1 GB of VRAM held between jobs, and the next job's Stage 2 embeddings ran 3× slower by job 2 and 8× slower by job 3 on the 2-minute file (KNOWN-ISSUES.md §2).
 
-In `api.py` this is compounded because pipeline jobs run in background threads. `BaseException` (not just `Exception`) is caught in pipeline threads because `SystemExit` from ctranslate2 is a `BaseException` subclass. `threading.excepthook` is also installed so any uncaught thread crash prints a traceback without killing uvicorn.
+**2026-10-14:** the crash **could not be reproduced** on ctranslate2 4.8.2, faster-whisper 1.2.1 and torch 2.5.1+cu124 (driver 581.15, GTX 1650). Each of these was tried in an isolated process and none crashed: freeing mid-process from the main thread or a worker thread, while another thread was transcribing, three load/free cycles in one process, and holding until exit. `api.py` now frees the model after every pipeline job (`_release_whisper()` → `transcribe.release_model()`). It runs in `_run_pipeline`'s `finally`, after `_push_complete()` / `_push_error()`, on the single worker thread, and only when a model is loaded. `RELEASE_WHISPER_AFTER_JOB=0` brings back holding it until exit.
+
+**Lessons:**
+- Record the exit code and error text when a process dies silently. "It exited" left nothing to compare against seven months later.
+- A workaround for a library bug is tied to the library version it was found on. Pin the library (`ctranslate2` and `faster-whisper` are now pinned) or re-check the workaround on upgrade, because it may be costing something long after the bug is gone.
+- Log a line before and after any operation that once killed the process. If the log ends between the two, that is the diagnosis.
+
+`BaseException` (not just `Exception`) is still caught in pipeline threads and in `_release_whisper()`, in case the crash comes back as `SystemExit`. `threading.excepthook` is also installed, so any uncaught thread crash prints a traceback without killing uvicorn. Neither catch helps with a native crash that kills the process outright; that is what the two log lines are for.
 
 ### CUDA memory not released between Stage 2 and Stage 3
 

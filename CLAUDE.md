@@ -117,7 +117,7 @@ Transcription uses **faster-whisper** (CTranslate2-based) instead of openai-whis
 - On CUDA: `device="cuda", compute_type="int8_float16"` — fits in 4 GB VRAM (torch 2.5.1+cu124, upgraded from 2.1.0+cu121)
 - On CPU: `device="cpu", compute_type="int8"`
 
-**ctranslate2 CUDA teardown bug (Windows):** ctranslate2's `__del__` calls `exit()` when the WhisperModel is garbage-collected mid-process on Windows. Fixed by holding a module-level reference (`_active_model`) so cleanup is deferred to process exit. Do not add `del model` inside `transcribe.run()`.
+**Whisper model lifetime (`_active_model`):** `transcribe.run()` stores the WhisperModel in the module global `_active_model`. In March 2026 (torch 2.1.0+cu121, ctranslate2 version unrecorded) a `del model` at the end of `run()` silently ended the process, so the global held the model until exit. On 2026-10-14 that crash **could not be reproduced** on ctranslate2 4.8.2, faster-whisper 1.2.1, torch 2.5.1+cu124 (freeing mid-process in the main thread or a worker thread, while another thread was transcribing, and at exit), and holding the model cost the next job's Stage 2 ~1 GB of VRAM. `api.py` now calls `_release_whisper()` in `_run_pipeline`'s `finally` — after `_push_complete()` / `_push_error()` and before the job-end memory line, on the single worker thread, only if a model is loaded — which calls `transcribe.release_model()` (drop the global, `gc.collect()`, `torch.cuda.synchronize()`, `empty_cache()`). It never raises: failures, `SystemExit` included, are logged as `Whisper model release failed (ignored)`. It prints `[job ...] Releasing Whisper model...` and then `[job ...] Whisper model released; VRAM free X of Y GB`; a log that ends on the first line is the March bug's signature. `RELEASE_WHISPER_AFTER_JOB=0` restores holding until exit. `ctranslate2` and `faster-whisper` are pinned in `requirements.txt` because the release was only verified on those versions. Never free the model inside `run()` or mid-job. The CLI does not release; the process exits. See KNOWN-ISSUES.md §2.
 
 ## Transcription modes
 
@@ -205,6 +205,7 @@ segmentation pass, and only the embedding crops avoid residency.
 | `WHISPER_LANGUAGE` | No | BCP-47 language code, e.g. `en`, `fr`, `es` (default: `en`) |
 | `SPEAKER_NAMES` | No | Comma-separated real names, e.g. `Alice,Bob` (default: generic labels) |
 | `WORD_TIMESTAMPS` | No | `true` / `1` to include per-word timestamps in JSON (~10–15% overhead) |
+| `RELEASE_WHISPER_AFTER_JOB` | No | API server only. Default on: free the Whisper model after each job. `0` / `false` / `no` / `off` holds it until the server exits (pre-2026-10-14 behaviour). |
 | `CUDA_LAUNCH_BLOCKING` | No | Set to `1` when using PyTorch 2.5.x — fixes `torch.vmap` CUDA dispatch in pyannote wespeaker fbank (Stage 2). Adds ~10–15% latency to Stage 2, no effect on Stage 3. Without it, Stage 2 crashes with `RuntimeError: CUDA error: unknown error`. |
 
 ## Dependencies and install order
@@ -345,14 +346,14 @@ The LLM API call (Claude or Gemini) takes 30–60 s. ngrok free tier drops idle 
 
 ### BaseException handling
 
-Pipeline threads catch `BaseException` (not just `Exception`) because ctranslate2's CUDA teardown raises `SystemExit` on Windows when the WhisperModel is garbage-collected mid-process. This is the same bug handled by the `_active_model` module-level reference in `transcribe.py`.
+Pipeline threads catch `BaseException` (not just `Exception`) because of the March 2026 ctranslate2 teardown crash (see "Whisper model lifetime" above), believed at the time to surface as `SystemExit`. `_release_whisper()` catches `BaseException` for the same reason.
 
 ## Tests
 
 Unit tests live in `tests/`:
-- `tests/test_config.py` — settings loading, overrides, env var parsing, `validate_for_report()` with per-provider API key checks
+- `tests/test_config.py` — settings loading, overrides, env var parsing, `validate_for_report()` with per-provider API key checks, `RELEASE_WHISPER_AFTER_JOB` parsing
 - `tests/test_export.py` — timestamp formatting, JSON schema, speaker name mapping, unique file naming, `write_relabelled()`, secret field leak checks, `metadata.warnings` / `# Warning:` lines only when non-empty
-- `tests/test_api.py` — `get_or_recover_job()` in-memory and disk recovery, glob filter patterns, job state structure, `ALLOWED_MODELS`, the `analysis_model` field via TestClient (legacy remap, unknown fallback), the removed `gemini_model` field being ignored with one log line on both POST endpoints (alone, both sent, legacy ID not remapped), its absence from OpenAPI and `/status`, re-identification warnings end to end through a stubbed `_run_pipeline` / `_run_report_from_json` (job state, `complete`, `/reconnect`, `/status`, terminal line, JSON, .txt; ok / partial / failed; malformed uploaded warnings), API key leak prevention (job dict, /reconnect, WebSocket, SDK exceptions, .gitignore)
+- `tests/test_api.py` — `get_or_recover_job()` in-memory and disk recovery, glob filter patterns, job state structure, `ALLOWED_MODELS`, the `analysis_model` field via TestClient (legacy remap, unknown fallback), the removed `gemini_model` field being ignored with one log line on both POST endpoints (alone, both sent, legacy ID not remapped), its absence from OpenAPI and `/status`, re-identification warnings end to end through a stubbed `_run_pipeline` / `_run_report_from_json` (job state, `complete`, `/reconnect`, `/status`, terminal line, JSON, .txt; ok / partial / failed; malformed uploaded warnings), the Whisper release after each job (after `complete`, before the job-end memory line; on a Stage 3 error; skipped when never loaded or switched off; release errors including `SystemExit` logged, not raised), API key leak prevention (job dict, /reconnect, WebSocket, SDK exceptions, .gitignore)
 - `tests/test_report.py` — prompt loading from file and fallback defaults, `warnings=` in the header and prompt (and an unchanged header without them), transcript chunking, model fallback on 503, Claude thinking-block handling, max-token truncation guards, Claude/Gemini API key validation, report output leak checks
 - `tests/test_progress.py` — the Stage 1/3 progress throttle (`stages/progress.py`): phase messages, 5% / 10 s throttling, rounding, swallowed callback errors
 - `tests/test_merge_transcripts.py` — `tools/merge_transcripts.py` via its CLI: Part N warning prefixes, no key when clean, offsets and options unchanged

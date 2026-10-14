@@ -56,6 +56,14 @@ class Settings:
         default_factory=lambda: os.getenv("WORD_TIMESTAMPS", "").strip().lower() in ("1", "true", "yes")
     )
 
+    # API server only: free the Whisper model after each job so the next job's
+    # Stage 2 gets the VRAM back. On unless set to 0 / false / no / off, which
+    # restores holding the model until process exit. See KNOWN-ISSUES.md §2.
+    release_whisper_after_job: bool = field(
+        default_factory=lambda: os.getenv("RELEASE_WHISPER_AFTER_JOB", "").strip().lower()
+        not in ("0", "false", "no", "off")
+    )
+
     def __post_init__(self) -> None:
         # Parse NUM_SPEAKERS from env if not overridden programmatically
         if self.num_speakers is None:

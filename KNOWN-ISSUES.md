@@ -155,12 +155,101 @@ allocated there is nothing to defragment.
 
 ---
 
-## 2. Whisper stays on the GPU between API jobs — OPEN, deliberate
+## 2. Whisper stays on the GPU between API jobs — FIXED
 
-**Status:** known, not being fixed yet. The module global `_active_model` in
-[`stages/transcribe.py`](stages/transcribe.py) holds the last WhisperModel until
-process exit. That is the workaround for ctranslate2's Windows teardown bug
-(see CLAUDE.md), so in the long-lived API server the model outlives its job.
+**Status:** fixed 2026-10-14. `api.py` frees the model after every pipeline job
+(`_release_whisper()` → `transcribe.release_model()`), on by default and
+switched off with `RELEASE_WHISPER_AFTER_JOB=0`. The history below is kept
+because the reason the model was held is a crash that could not be reproduced,
+and it may come back.
+
+### If it goes wrong — the signature
+
+Each release prints two lines:
+
+```
+[job <id>] Releasing Whisper model...
+[job <id>] Whisper model released; VRAM free 3.16 of 4.00 GB
+```
+
+**If the server log ends on `Releasing Whisper model...` with no `released`
+line (and no uvicorn shutdown lines) after it, the March 2026 teardown crash is
+back.** That job's files are already written and its `complete` (or `error`)
+message already sent, so its results are safe; the server process is gone.
+Set `RELEASE_WHISPER_AFTER_JOB=0` in `.env` and restart — that restores holding
+the model until exit — then check whether `ctranslate2` / `faster-whisper` /
+torch / the NVIDIA driver changed. A Python-level failure is not this: it is
+caught and logged as `Whisper model release failed (ignored): ...` and the
+server carries on.
+
+### Why the model used to be held
+
+On 2026-03-26 (CLI, torch 2.1.0+cu121, ctranslate2 not pinned and its version
+not recorded) a `del model` at the end of `transcribe.run()` — main thread,
+mid-process, right after transcription — ended the process silently: a debug
+print placed after the `del` never appeared (commits `abd327a`, `26a9095`). No
+error text or exit code was recorded. The diagnosis at the time was that
+ctranslate2's `__del__` calls `exit()`; that was never confirmed. The fix was
+to keep the model in the module global `_active_model` until process exit.
+
+### Could not reproduce on the current stack (2026-10-14)
+
+Tested on **ctranslate2 4.8.2, faster-whisper 1.2.1, torch 2.5.1+cu124**,
+NVIDIA driver 581.15, GTX 1650, Python 3.12, `medium` / `int8_float16`, with a
+torch CUDA context live as Stage 2 leaves it, using the real `transcribe.run()`
+on the 2-minute file. Each scenario in its own process; **none crashed** (exit 0
+every time, no `Exception ignored` lines):
+
+| Scenario | Result |
+|---|---|
+| Free mid-process, main thread (the March condition) | ~0.95 GB returned, torch still usable |
+| Free mid-process, from the worker thread | same |
+| Load, transcribe, free — three times in one process | 3.16–3.17 GB free after each |
+| Drop the global while another thread is transcribing | freed when that thread finishes |
+| `unload_model()` while another thread is transcribing | no error |
+| Hold until interpreter exit (the old code) | clean exit |
+
+The likely explanation is a fix in ctranslate2 or the change away from the
+torch 2.1/cu121 libraries, but that is unproven — the old stack was not
+reinstalled. That is why `ctranslate2==4.8.2` and `faster-whisper==1.2.1` are
+now pinned in `requirements.txt`.
+
+### Options compared (harness, 3 consecutive jobs on the 2-minute file)
+
+| | Free VRAM at job start 1/2/3 | Embeddings jobs 2/3 | Stage 3 total | Commit at end |
+|---|---|---|---|---|
+| Hold until exit (old) | 3.22 / 2.23 / 1.63 GB | 23.2 s / 55.1 s | ~60 s | 4.48 GB |
+| **A: free after the job completes (chosen)** | 3.22 / 3.16 / 3.16 GB | 6.9 s / 7.0 s | ~61 s | 2.95 GB |
+| B: Stage 3 in a child process | 3.22 / 3.17 / 3.17 GB | 7.1 s / 6.9 s | ~69 s | 2.51 GB |
+| C: free at the next job's Stage 2 | 3.22 / 2.23 / 2.22 GB (3.16 after the free) | 7.0 s / 7.0 s | ~61 s | 3.90 GB |
+
+The model was already rebuilt every job (6–8 s), so A adds no reload cost; the
+free takes ~0.3 s. B costs ~8 s a job for process start-up. C keeps ~1 GB of
+VRAM and ~1 GB of commit held while the server is idle. Transcript text was
+identical in every run.
+
+### Verified through the real API (2026-10-14)
+
+A throwaway `--port 0` server, five jobs back to back over HTTP
+(`[job …] Memory at job start/end` lines):
+
+| Job | File | Free VRAM start → end | Commit start → end | Embeddings |
+|---|---|---|---|---|
+| 1 | 2-minute | 3.22 → 3.16 GB | 1.68 → 2.95 GB | 0:07 |
+| 2 | 2-minute | 3.16 → 3.16 GB | 2.95 → 2.97 GB | 0:07 |
+| 3 | 10-minute excerpt | 3.16 → 3.15 GB | 2.97 → 2.98 GB | 0:35 |
+| 4 | 2-minute, Stage 3 forced to raise after model load | 3.15 → 3.15 GB | 2.98 → 2.98 GB | 0:07 |
+| 5 | 2-minute | 3.15 → 3.14 GB | 2.98 → 2.99 GB | 0:07 |
+
+Job 3's 0:35 matches a fresh server's 0:36–0:37 on the same excerpt. Job 4
+ended in `error`, still printed both release lines, and the server accepted
+and completed job 5. The same file run twice on `main` (old code) gave
+3.22 → 2.23 → 1.63 GB and embeddings 0:07 → 0:23. Transcripts from the new
+code were identical to the old code's in text, timestamps and speakers; the
+only difference, one `confidence` value off by 0.006, also appears between the
+old code's own job 1 and job 2 (GPU run-to-run noise).
+
+### Original measurement (before the fix)
 
 Measured 2026-10-14 with two back-to-back jobs on the 2-minute file in one
 server process (`[job …] Memory at job start/end` lines):
@@ -179,8 +268,9 @@ server process (`[job …] Memory at job start/end` lines):
   to avoid. It did not crash in this test. Why the 0.6 GB is not returned is
   unconfirmed (ctranslate2's own caching allocator is the likely holder).
 - Process commit grew 2.2 GB over job 1 (mostly one-time CUDA/library
-  initialisation) and 0.6 GB over job 2. A third job is needed to tell a
-  steady state from a per-job leak.
+  initialisation) and 0.6 GB over job 2. A third job (harness, above) showed it
+  levels off at ~4.5 GB: a plateau, not a per-job leak. With the release it
+  levels off at ~2.95 GB.
 
 ## 3. Stage 2 silently skipped speaker re-identification under a non-UTF-8 stdout — FIXED
 

@@ -143,3 +143,24 @@ def test_word_timestamps_true_when_set(monkeypatch):
     monkeypatch.setenv("WORD_TIMESTAMPS", "true")
     s = Settings()
     assert s.word_timestamps is True
+
+
+def test_release_whisper_after_job_on_by_default(monkeypatch):
+    """RELEASE_WHISPER_AFTER_JOB unset or blank means release."""
+    monkeypatch.delenv("RELEASE_WHISPER_AFTER_JOB", raising=False)
+    assert Settings().release_whisper_after_job is True
+    monkeypatch.setenv("RELEASE_WHISPER_AFTER_JOB", "")
+    assert Settings().release_whisper_after_job is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", " OFF "])
+def test_release_whisper_after_job_off_values(monkeypatch, value):
+    """RELEASE_WHISPER_AFTER_JOB=0 (or false/no/off) keeps the model until exit."""
+    monkeypatch.setenv("RELEASE_WHISPER_AFTER_JOB", value)
+    assert Settings().release_whisper_after_job is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on"])
+def test_release_whisper_after_job_on_values(monkeypatch, value):
+    monkeypatch.setenv("RELEASE_WHISPER_AFTER_JOB", value)
+    assert Settings().release_whisper_after_job is True

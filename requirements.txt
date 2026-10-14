@@ -9,7 +9,12 @@ pyannote.audio>=3.1.0,<4.0
 soundfile>=0.12.0
 
 # Transcription — faster-whisper (CTranslate2-based, GPU-accelerated)
-faster-whisper>=1.0.0
+# Pinned: api.py frees the Whisper model after each job (RELEASE_WHISPER_AFTER_JOB).
+# Freeing it mid-process killed the process in March 2026 on an older stack; it was
+# verified safe on exactly these versions with torch 2.5.1+cu124 (KNOWN-ISSUES.md §2).
+# Re-run that check before upgrading either, or set RELEASE_WHISPER_AFTER_JOB=0.
+faster-whisper==1.2.1
+ctranslate2==4.8.2
 
 # HuggingFace hub — must stay <1.0.0 for pyannote 3.x internal API compatibility
 huggingface_hub>=0.16.0,<1.0.0

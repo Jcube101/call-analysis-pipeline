@@ -529,6 +529,29 @@ def _log_memory(job_id: str, when: str) -> None:
         print(f"[job {job_id}] Memory at job {when}: unavailable ({e})", flush=True)
 
 
+def _release_whisper(job_id: str) -> None:
+    """Free the Whisper model once a pipeline job has finished, complete or not.
+
+    Runs on the single worker thread after the job's last message, so no job
+    is mid-flight; a queued job starts only after this returns. Skipped when
+    RELEASE_WHISPER_AFTER_JOB=0 or Stage 3 never loaded a model. Never raises:
+    a failure (including SystemExit) is logged and the worker carries on.
+
+    The two lines bracket the free. If the March 2026 ctranslate2 teardown bug
+    returns, the server log ends on "Releasing Whisper model..." with no
+    "released" line after it (KNOWN-ISSUES.md §2).
+    """
+    try:
+        if not settings.release_whisper_after_job or not transcribe.model_loaded():
+            return
+        print(f"[job {job_id}] Releasing Whisper model...", flush=True)
+        mem = transcribe.release_model()
+        vram = f"{mem[0] / 2**30:.2f} of {mem[1] / 2**30:.2f} GB" if mem else "n/a (no CUDA)"
+        print(f"[job {job_id}] Whisper model released; VRAM free {vram}", flush=True)
+    except BaseException as e:
+        print(f"[job {job_id}] Whisper model release failed (ignored): {e!r}", flush=True)
+
+
 def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
     """Run the full pipeline (Stages 1–4, optionally 5). Executes in the thread pool."""
     job = jobs[job_id]
@@ -698,6 +721,9 @@ def _run_pipeline(job_id: str, input_path: str, params: dict) -> None:
         _push_error(job_id, str(exc))
 
     finally:
+        # After _push_complete() / _push_error(), so the client has its result
+        # before the free; before the "end" line, so that line shows the effect.
+        _release_whisper(job_id)
         _log_memory(job_id, "end")
 
 
