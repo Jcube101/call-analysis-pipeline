@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import gc
 import os
+import random
 import sys
 import time
 import warnings
@@ -31,6 +32,12 @@ from config import settings
 # Upper bound on embeddings handed to agglomerative clustering. See the comment
 # at the assignment in run() for why this is set and why 1000.
 MAX_CLUSTERING_EMBEDDINGS = 1000
+
+# Seed for that subsample. Above the cap, pyannote picks which embeddings to
+# cluster with an unseeded random.shuffle(), so four runs of a 10-minute
+# excerpt gave 272, 272, 283 and 270 segments. The value is arbitrary; fixing
+# it makes Stage 2 repeatable.
+CLUSTERING_SUBSAMPLE_SEED = 0
 
 # Stage 2's peak commit, fitted from two measured points -- the 2 minute file
 # (5404 MB) and the 2h43m file (5670 MB), both with the clustering cap and with
@@ -588,7 +595,14 @@ def run(
     # Segmentation is started here rather than at its first hook call: the
     # whole-file audio load happens before that call and belongs to it.
     monitor.begin("segmentation")
-    diarization = pipeline(clean_wav_path, hook=monitor, **diarize_kwargs)
+    # Seed the module-level `random` that pyannote's clustering subsample
+    # uses, then restore its state so nothing else in the process is affected.
+    random_state = random.getstate()
+    random.seed(CLUSTERING_SUBSAMPLE_SEED)
+    try:
+        diarization = pipeline(clean_wav_path, hook=monitor, **diarize_kwargs)
+    finally:
+        random.setstate(random_state)
     monitor.end()
 
     # Collect raw segments — handle different pyannote output types across versions
