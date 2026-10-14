@@ -182,9 +182,10 @@ server process (`[job …] Memory at job start/end` lines):
   initialisation) and 0.6 GB over job 2. A third job is needed to tell a
   steady state from a per-job leak.
 
-## 3. Stage 2 silently skips speaker re-identification under a non-UTF-8 stdout — OPEN
+## 3. Stage 2 silently skipped speaker re-identification under a non-UTF-8 stdout — FIXED
 
-**Status:** known, not fixed. `_reidentify_speakers()` in
+**Status:** fixed 2026-10-14 — the line now prints `>=`, which every
+encoding can carry. Before that, `_reidentify_speakers()` in
 [`stages/diarize.py`](stages/diarize.py) prints `≥` in its "Extracting MFCC
 features" line. When stdout is piped or redirected without UTF-8, Python on this
 machine encodes it as cp1252, the print raises `UnicodeEncodeError`, and
@@ -198,7 +199,11 @@ Speaker labels then come straight from pyannote, so **the output changes**
 (verified 2026-10-14 on the 2-minute file: piped and UTF-8 runs produce
 different segments). `api.py` and `main.py` reconfigure stdout/stderr to UTF-8
 at startup and are not affected; any other runner that imports the stages with a
-redirected stdout is — set `PYTHONIOENCODING=utf-8` until it is fixed.
+redirected stdout was. The UTF-8 reconfiguration stays in both entry points:
+other output (em dashes, tqdm bars) still benefits from it. Any re-identification
+failure that remains is now reported rather than silent — see the
+`on_reidentification` outcome in `stages/diarize.py` and the `warnings` field
+in the API.
 
 ## 4. Stage 2 slow and out of memory because of `PYTORCH_CUDA_ALLOC_CONF` — FIXED
 

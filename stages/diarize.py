@@ -419,7 +419,7 @@ def _reidentify_speakers(
     n_failed = 0
     first_error: str = ""
 
-    print(f"[Stage 2] Extracting MFCC features ({len(segments)} segments, ≥{MIN_SEG_SECONDS}s only)...")
+    print(f"[Stage 2] Extracting MFCC features ({len(segments)} segments, >={MIN_SEG_SECONDS}s only)...")
 
     with sf.SoundFile(clean_wav_path, mode="r") as handle:
         total_frames = handle.frames
