@@ -19,6 +19,7 @@ environment does not need GPU dependencies installed.
 import json
 import os
 import sys
+import time
 import types
 
 import pytest
@@ -837,3 +838,128 @@ def test_status_keeps_deprecated_gemini_model_mirror(client):
     assert body["analysis_model"] == body["gemini_model"] == "claude-sonnet-5-5"
     assert body["params"]["gemini_model"] == "claude-sonnet-5-5"
     assert "gemini_model" not in job, "mirror must not be written back to the job"
+
+
+# ---------------------------------------------------------------------------
+# Picking the newest report when a job folder holds several
+# ---------------------------------------------------------------------------
+
+_OLD_REPORT = "input_20261014_102309_report.md"
+_NEW_REPORT = "input_20261014_122655_report.md"
+
+
+def _write_reports(job_dir, names_and_ages):
+    """Write one report per (name, age_seconds); each file's body is its own name."""
+    now = time.time()
+    for name, age in names_and_ages:
+        path = os.path.join(job_dir, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"# {name}\n")
+        os.utime(path, (now - age, now - age))
+
+
+def _report_job_dir(tmp_path, job_id, names_and_ages):
+    job_dir = _make_job_dir(str(tmp_path), job_id)
+    _write_reports(job_dir, names_and_ages)
+    return job_dir
+
+
+@pytest.mark.parametrize("ages", [
+    {_OLD_REPORT: 7200, _NEW_REPORT: 0},      # mtimes agree with the names
+    {_OLD_REPORT: 0, _NEW_REPORT: 7200},      # alphabetically-first file has the newer mtime
+])
+def test_latest_report_uses_filename_timestamp(tmp_path, ages):
+    from api import _latest_report
+    job_dir = _report_job_dir(tmp_path, "rep", list(ages.items()))
+    assert os.path.basename(_latest_report(job_dir)) == _NEW_REPORT
+
+
+def test_latest_report_mtime_breaks_same_timestamp_tie(tmp_path):
+    from api import _latest_report
+    job_dir = _report_job_dir(tmp_path, "rep", [
+        ("a_20261014_120000_report.md", 0),
+        ("b_20261014_120000_report.md", 7200),
+    ])
+    assert os.path.basename(_latest_report(job_dir)) == "a_20261014_120000_report.md"
+
+
+def test_latest_report_falls_back_to_mtime_for_unmatched_names(tmp_path):
+    from api import _latest_report
+    job_dir = _report_job_dir(tmp_path, "rep", [
+        ("custom_report.md", 0),               # no timestamp in the name; written just now
+        ("input_20200101_000000_report.md", 0),  # timestamped name, years older
+    ])
+    assert os.path.basename(_latest_report(job_dir)) == "custom_report.md"
+
+
+def test_latest_report_none_when_no_reports(tmp_path):
+    from api import _latest_report
+    assert _latest_report(_make_job_dir(str(tmp_path), "rep")) is None
+
+
+@pytest.mark.parametrize("old_age,new_age", [(7200, 0), (0, 7200)])
+def test_download_report_serves_newest(client, tmp_path, old_age, new_age):
+    """Recovered job (not in memory): /download picks the newest report."""
+    job_id = "dl-newest"
+    jobs.pop(job_id, None)
+    _report_job_dir(tmp_path, job_id, [(_OLD_REPORT, old_age), (_NEW_REPORT, new_age)])
+    resp = client.get(f"/download/{job_id}/report")
+    assert resp.status_code == 200
+    assert _NEW_REPORT in resp.headers["content-disposition"]
+    assert resp.text.strip() == f"# {_NEW_REPORT}"
+
+
+def test_download_report_prefers_in_memory_report_path(client, tmp_path):
+    """An in-memory job serves the report it produced, even if a newer file sits beside it."""
+    job_id = "dl-known"
+    job_dir = _report_job_dir(tmp_path, job_id, [(_OLD_REPORT, 0), (_NEW_REPORT, 0)])
+    jobs[job_id] = {"status": "complete", "output_dir": job_dir,
+                    "report_path": os.path.join(job_dir, _OLD_REPORT)}
+    try:
+        resp = client.get(f"/download/{job_id}/report")
+        assert _OLD_REPORT in resp.headers["content-disposition"]
+    finally:
+        jobs.pop(job_id, None)
+
+
+def test_download_report_ignores_missing_report_path(client, tmp_path):
+    job_id = "dl-missing"
+    job_dir = _report_job_dir(tmp_path, job_id, [(_NEW_REPORT, 0)])
+    jobs[job_id] = {"status": "complete", "output_dir": job_dir,
+                    "report_path": os.path.join(job_dir, "gone_report.md")}
+    try:
+        resp = client.get(f"/download/{job_id}/report")
+        assert _NEW_REPORT in resp.headers["content-disposition"]
+    finally:
+        jobs.pop(job_id, None)
+
+
+@pytest.mark.parametrize("old_age,new_age", [(7200, 0), (0, 7200)])
+def test_recovery_picks_newest_report(tmp_path, monkeypatch, old_age, new_age):
+    monkeypatch.chdir(tmp_path)
+    job_id = "recover-newest"
+    jobs.pop(job_id, None)
+    _report_job_dir(tmp_path, job_id, [(_OLD_REPORT, old_age), (_NEW_REPORT, new_age)])
+    try:
+        job = get_or_recover_job(job_id)
+        assert os.path.basename(job["report_path"]) == _NEW_REPORT
+        assert os.path.basename(job["files"]["report"]) == _NEW_REPORT
+        assert job["report"].strip() == f"# {_NEW_REPORT}"
+    finally:
+        jobs.pop(job_id, None)
+
+
+@pytest.mark.parametrize("old_age,new_age", [(7200, 0), (0, 7200)])
+def test_reconnect_outputs_and_fallback_use_newest(client, tmp_path, old_age, new_age):
+    """/reconnect's outputs map agrees with /download, and its disk fallback reads the newest report."""
+    job_id = "reconnect-newest"
+    job_dir = _report_job_dir(tmp_path, job_id, [(_OLD_REPORT, old_age), (_NEW_REPORT, new_age)])
+    jobs[job_id] = {"status": "complete", "output_dir": job_dir, "report": None, "message_queue": []}
+    try:
+        from api import _resolve_download_path
+        body = client.get(f"/reconnect/{job_id}").json()
+        assert body["outputs"]["report"] is True
+        assert os.path.basename(_resolve_download_path(job_dir, "report")) == _NEW_REPORT
+        assert body["report"].strip() == f"# {_NEW_REPORT}"
+    finally:
+        jobs.pop(job_id, None)

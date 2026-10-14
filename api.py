@@ -33,6 +33,7 @@ GPU constraint
 from __future__ import annotations
 
 import os
+import re
 os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "1")  # fixes torch.vmap CUDA error on PyTorch 2.5.x (pyannote wespeaker fbank)
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
 
@@ -207,6 +208,39 @@ def _configure_settings(params: dict) -> None:
         settings.whisper_model = params["whisper_model"]
 
 
+# stages/report.py names reports <stem>_<YYYYMMDD_HHMMSS>_report.md (local time)
+_REPORT_TS_RE = re.compile(r"_(\d{8}_\d{6})_report\.md$")
+
+
+def _report_sort_key(path: str) -> tuple[float, float]:
+    """(filename timestamp, mtime) as epoch seconds; mtime stands in for a name that doesn't match."""
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        mtime = 0.0
+    m = _REPORT_TS_RE.search(os.path.basename(path))
+    if m:
+        try:
+            return time.mktime(time.strptime(m.group(1), "%Y%m%d_%H%M%S")), mtime
+        except ValueError:
+            pass
+    return mtime, mtime
+
+
+def _latest_report(job_dir: str) -> Optional[str]:
+    """
+    Newest *_report.md in job_dir, or None.
+
+    A job folder collects one report per Stage 5 run (report-from-json writes
+    into the original job's folder), so "the report" means the latest one.
+    Ordered by the timestamp in the filename, with mtime as the tie-break and
+    as the fallback for names that don't match. Do not take glob()[0]: on
+    Windows that is the alphabetically first file, i.e. the oldest report.
+    """
+    candidates = _glob.glob(os.path.join(job_dir, "*_report.md"))
+    return max(candidates, key=_report_sort_key) if candidates else None
+
+
 def get_or_recover_job(job_id: str) -> Optional[dict]:
     """
     Return the in-memory job dict, or reconstruct it from disk if the server restarted.
@@ -232,15 +266,15 @@ def get_or_recover_job(job_id: str) -> Optional[dict]:
         f for f in _glob.glob(os.path.join(job_dir, "*.json"))
         if os.path.basename(f) != "transcript.json"
     ]
-    report_files = _glob.glob(os.path.join(job_dir, "*_report.md"))
+    latest_report = _latest_report(job_dir)
 
     files: dict = {}
     if txt_files:
         files["transcript"] = txt_files[0]
     if json_files:
         files["json"] = json_files[0]
-    if report_files:
-        files["report"] = report_files[0]
+    if latest_report:
+        files["report"] = latest_report
 
     # Only claim the job finished if the folder actually holds a pipeline
     # output. The folder is created when the upload lands, so a server that
@@ -249,7 +283,7 @@ def get_or_recover_job(job_id: str) -> Optional[dict]:
     # which is exactly the shape a client reads as "the job produced nothing".
     # The JSON is what hydrates the transcript below; a report alone is enough
     # for a /report-from-json job that wrote no transcript of its own.
-    has_output = bool(json_files or report_files)
+    has_output = bool(json_files or latest_report)
 
     recovered: dict = {
         "status": "complete" if has_output else "unknown",
@@ -257,7 +291,7 @@ def get_or_recover_job(job_id: str) -> Optional[dict]:
         # evidence of whether a report was asked for is whether one was
         # written. Claiming True when no file exists would make every
         # report-less run look like a failure after a restart.
-        "generate_report": bool(report_files),
+        "generate_report": bool(latest_report),
         "output_dir": job_dir,
         "files": files,
         "message_queue": [],
@@ -266,7 +300,7 @@ def get_or_recover_job(job_id: str) -> Optional[dict]:
         "progress_message": None,
         "transcript": None,
         "metadata": {},
-        "report_path": report_files[0] if report_files else None,
+        "report_path": latest_report,
         "report": None,
         "error": None,
     }
@@ -313,7 +347,7 @@ def _resolve_download_path(job_dir: str, file_type: str) -> Optional[str]:
             if "named" not in os.path.basename(f)
         ]
     elif file_type == "report":
-        candidates = _glob.glob(os.path.join(job_dir, "*_report.md"))
+        return _latest_report(job_dir)
     elif file_type == "wav":
         candidates = _glob.glob(os.path.join(job_dir, "*_clean.wav"))
     else:
@@ -890,9 +924,8 @@ async def reconnect(job_id: str):
         report_path = job.get("report_path")
         if not report_path:
             job_dir = job.get("output_dir", f"output/jobs/{job_id}")
-            candidates = _glob.glob(os.path.join(job_dir, "*_report.md"))
-            if candidates:
-                report_path = candidates[0]
+            report_path = _latest_report(job_dir)
+            if report_path:
                 job["report_path"] = report_path
         if report_path and os.path.isfile(report_path):
             try:
@@ -962,7 +995,15 @@ async def download(job_id: str, file_type: str):
     if file_type not in media_types:
         raise HTTPException(status_code=400, detail="Unknown file type. Use: transcript, json, report, wav")
     media_type = media_types[file_type]
-    file_path = _resolve_download_path(job_dir, file_type)
+    file_path = None
+    if file_type == "report":
+        # The report this job actually produced, when known; the folder can
+        # hold reports from earlier runs of the same call.
+        known = job.get("report_path")
+        if known and os.path.isfile(known):
+            file_path = known
+    if file_path is None:
+        file_path = _resolve_download_path(job_dir, file_type)
 
     if not file_path or not os.path.isfile(file_path):
         raise HTTPException(status_code=404, detail="File not ready yet")
