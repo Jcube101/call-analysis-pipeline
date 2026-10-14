@@ -478,21 +478,27 @@ def _reidentify_speakers(
             cluster_to_label[cid] = f"SPEAKER_{counter:02d}"
             counter += 1
 
-    # Write new labels back to long segments
-    long_set = set(long_indices)
-    for seg_idx, cid in zip(long_indices, cluster_ids):
-        segments[seg_idx]["label"] = cluster_to_label[cid]
+    # Work out every new label before touching the segments, then apply them in
+    # one pass. Writing them in place as they were computed meant an exception
+    # part-way through left some segments relabelled while run() reported
+    # "using pyannote labels as-is".
+    new_labels: dict[int, str] = {
+        seg_idx: cluster_to_label[cid] for seg_idx, cid in zip(long_indices, cluster_ids)
+    }
 
     # Short segments inherit the label of their nearest long segment (by midpoint)
     for i, seg in enumerate(segments):
-        if i in long_set:
+        if i in new_labels:
             continue
         seg_mid = (seg["start"] + seg["end"]) / 2
         nearest = min(
             long_indices,
             key=lambda li: abs((segments[li]["start"] + segments[li]["end"]) / 2 - seg_mid),
         )
-        segments[i]["label"] = segments[nearest]["label"]
+        new_labels[i] = new_labels[nearest]
+
+    for i, label in new_labels.items():
+        segments[i]["label"] = label
 
     n_distinct = len(set(s["label"] for s in segments))
     print(f"[Stage 2] Re-identification complete — {n_distinct} distinct speaker(s) after clustering")
