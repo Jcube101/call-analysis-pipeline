@@ -68,6 +68,7 @@ prompts/
   date.md             — analysis prompt for date conversations (user-editable)
 tools/
   merge_transcripts.py — merge two transcript JSONs (part 1 + part 2); combines metadata.warnings as "Part N: ..."; supersedes the untracked output/merge_transcripts.py
+  swap_speakers.py     — swap two speaker labels in a transcript JSON (speaker fields, matching label fields, speaker lists); never overwrites the input; errors on an unknown label or A == B
 input/           — place source audio files here (gitignored, must exist locally)
 output/          — pipeline outputs land here (gitignored, must exist locally)
 ```
@@ -357,6 +358,7 @@ Unit tests live in `tests/`:
 - `tests/test_report.py` — prompt loading from file and fallback defaults, `warnings=` in the header and prompt (and an unchanged header without them), transcript chunking, model fallback on 503, Claude thinking-block handling, max-token truncation guards, Claude/Gemini API key validation, report output leak checks
 - `tests/test_progress.py` — the Stage 1/3 progress throttle (`stages/progress.py`): phase messages, 5% / 10 s throttling, rounding, swallowed callback errors
 - `tests/test_merge_transcripts.py` — `tools/merge_transcripts.py` via its CLI: Part N warning prefixes, no key when clean, offsets and options unchanged
+- `tests/test_swap_speakers.py` — `tools/swap_speakers.py` via its CLI: both directions, metadata speaker list, matching `label` only, unknown label and A == B errors, output == input refused, `--dry-run`, warnings and other fields unchanged, non-ASCII names
 - `tests/test_models.py` — model registry shape, legacy ID remapping (with log line), unknown-value fallback, provider lookup
 - `tests/test_diarize_reid.py` — Stage 2 speaker re-identification outcome: ok, partial, failed (scikit-learn missing, exception before extraction, unreadable WAV, too few usable segments, clustering exception), the all-or-nothing label write-back, the fewer-speakers warning, and the non-UTF-8 stdout regression
 

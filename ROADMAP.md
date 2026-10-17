@@ -101,7 +101,7 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 - [x] **Sub-modes renamed** — "Analyse Audio" and "Report from Transcript"
 - [x] **Model selector helper text** — explains Claude Haiku vs Sonnet and Gemini Flash vs Pro tradeoffs
 - [x] **Demo tab Markdown rendering fixed**
-- [x] **Unit test suite** — pytest, 4 modules (config, export, api, report), 88 tests, all passing; includes API key leak prevention tests across all output surfaces (now 8 modules, 241 tests — see v1.1)
+- [x] **Unit test suite** — pytest, 4 modules (config, export, api, report), 88 tests, all passing; includes API key leak prevention tests across all output surfaces (now 9 modules, 250 tests — see v1.1)
 - [x] **Integration tests completed manually** — full pipeline on real M4A files, all stages, Claude and Gemini models, two-pass renaming workflow
 - [x] **API tests completed manually** — all endpoints validated: /analyse, /report-from-json, /status, /reconnect, /download/*, WebSocket, disk recovery
 
@@ -149,7 +149,8 @@ Moved to v1.0 — terminal workflow is sufficient for current use.
 - [x] **Track `tools/merge_transcripts.py`** — merges part 1 + part 2 JSONs and carries both parts' warnings as `Part N: ...`; supersedes the untracked `output/merge_transcripts.py`
 - [x] **`start_server.ps1`** — starts the API on 8010 with `PYTHONIOENCODING=utf-8`, port and commit-headroom pre-checks, `-LogFile` and `-Stop`
 - [x] **Free the Whisper model after each API job (2026-10-14)** — `_release_whisper()` after `complete` / `error`; `RELEASE_WHISPER_AFTER_JOB=0` restores holding it until exit; `ctranslate2` and `faster-whisper` pinned (KNOWN-ISSUES.md §2)
-- [x] **Unit tests at 241** — 8 modules: config, export, api, report, models, progress, merge_transcripts, diarize_reid
+- [x] **Track `tools/swap_speakers.py`** — swaps two speaker labels in a transcript JSON; refuses to overwrite the input or run with an unknown label
+- [x] **Unit tests at 250** — 9 modules: config, export, api, report, models, progress, merge_transcripts, diarize_reid, swap_speakers
 
 ---
 
