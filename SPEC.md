@@ -409,6 +409,8 @@ LLM API calls can take 30–60 s. A `_heartbeat_worker` daemon thread sends a pr
 
 `tools/merge_transcripts.py part1.json part2.json merged.json [--gap 1.0] [--swap-speakers A B] [--dry-run]` merges two transcript JSONs of one recording. Part 2's timestamps are offset to follow part 1 plus `--gap` seconds; `--swap-speakers` swaps two labels in part 2. The output keeps part 1's metadata, with `metadata.warnings` replaced by both parts' warnings prefixed `Part 1: ` / `Part 2: ` (omitted when neither has any). It supersedes the untracked `output/merge_transcripts.py`.
 
+`tools/swap_speakers.py in.json out.json A B [--dry-run]` swaps two speaker labels throughout a transcript JSON: every `speaker` string field at any depth, a `label` field holding A or B, and every list of strings under a key containing `speaker` (e.g. `metadata.speaker_names`). All other fields, `metadata.warnings` included, are unchanged. It prints the segment count changed in each direction, refuses an output path equal to the input, and exits with an error if A equals B or either label appears in no speaker field. `--dry-run` writes nothing.
+
 ---
 
 ## Deferred / out of scope (current version)

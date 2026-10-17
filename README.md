@@ -257,6 +257,16 @@ python tools/merge_transcripts.py part1.json part2.json merged.json --dry-run
 
 Part 2's timestamps are offset to follow part 1 (plus `--gap` seconds, default 1.0). `--swap-speakers` swaps two labels in part 2 when its labels came out flipped. The output keeps part 1's metadata. `metadata.warnings` is replaced by both parts' warnings, each prefixed `Part 1: ` or `Part 2: `, and left out when neither part has any. This replaces the old untracked `output/merge_transcripts.py`.
 
+### Swapping two speaker labels
+
+`tools/swap_speakers.py` swaps two speaker labels throughout a transcript JSON and writes the result to a new file:
+
+```bash
+python tools/swap_speakers.py in.json out.json "Speaker A" "Speaker B" [--dry-run]
+```
+
+Use it when a single-mic recording came out with its labels flipped, as a quicker alternative to re-running `--from-json` or Report from Transcript with speaker names. It swaps every `speaker` field, a `label` field holding either name, and speaker lists such as `metadata.speaker_names`; everything else, `metadata.warnings` included, is unchanged. It prints how many segments changed each way, refuses to overwrite the input, and exits with an error if either label is not in the file or both are the same. `--dry-run` prints the summary and writes nothing.
+
 ### First-run note
 
 The faster-whisper `medium` model (~1.5 GB) downloads automatically on first run. This is expected and only happens once.
@@ -366,7 +376,7 @@ Run the pytest unit test suite:
 pytest tests/ -v
 ```
 
-241 tests across 8 modules. Covers: config loading, export formatting (including warning lines), API job recovery, the `analysis_model` field and the removed `gemini_model` field, re-identification warnings end to end, the Whisper release after each job, report prompt loading and warning headers, model fallback and the model registry, the progress throttle, the Stage 2 re-identification outcome, `tools/merge_transcripts.py`, and API key leak prevention across all output surfaces.
+250 tests across 9 modules. Covers: config loading, export formatting (including warning lines), API job recovery, the `analysis_model` field and the removed `gemini_model` field, re-identification warnings end to end, the Whisper release after each job, report prompt loading and warning headers, model fallback and the model registry, the progress throttle, the Stage 2 re-identification outcome, `tools/merge_transcripts.py`, `tools/swap_speakers.py`, and API key leak prevention across all output surfaces.
 
 ### Integration tests (manual, completed)
 
@@ -437,8 +447,9 @@ call-analysis-pipeline/
 │   ├── report.py         # Stage 5: Claude/Gemini API analysis report
 │   └── progress.py       # Phase/percent progress reporting for Stages 1 and 3
 ├── tools/
-│   └── merge_transcripts.py  # Merge part 1 + part 2 transcript JSONs
-├── tests/                # pytest unit tests (241)
+│   ├── merge_transcripts.py  # Merge part 1 + part 2 transcript JSONs
+│   └── swap_speakers.py      # Swap two speaker labels in a transcript JSON
+├── tests/                # pytest unit tests (250)
 ├── prompts/
 │   ├── friend.md              # Analysis prompt for friend conversations
 │   ├── work.md                # Analysis prompt for work conversations
