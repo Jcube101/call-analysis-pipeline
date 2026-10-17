@@ -2,7 +2,7 @@
 
 A Python pipeline that takes a recorded conversation and produces a clean, speaker-diarized, timestamped transcript and an AI-generated analysis report. Runs fully locally with GPU acceleration (report generation uses the Claude API by default, with Gemini as an alternative).
 
-**Status: v1.0 — fully functional and tested end-to-end (GPU, Windows 11, GTX 1650). Validated on recordings up to 2h40m. Includes speaker re-identification and speaker name mapping.**
+**Status: v1.0 — fully functional and tested end-to-end (GPU, Windows 11, GTX 1650). Validated on recordings up to 3h42m (one measured run on this hardware, not a guarantee; see [Integration tests](#integration-tests-manual-completed)). Includes speaker re-identification and speaker name mapping.**
 
 > **Picking this up after a break?** This machine has **no `venv/`** for this project — all dependencies live in the **global Python 3.12** install (`C:\Users\jobjo\AppData\Local\Programs\Python\Python312\python.exe`). There's also a separate **Python 3.11** on PATH (`...\Python311\python.exe`) that is *not* set up for this project — if `python`/`pip` resolve to 3.11 instead of 3.12, you'll hit `ModuleNotFoundError` for everything (`uvicorn`, `dotenv`, `torch`, ...) even though it "should" be installed. Check with `where python` — the 3.12 one needs to come first, or invoke it explicitly (`C:\Users\jobjo\AppData\Local\Programs\Python\Python312\python.exe -m uvicorn api:app --host 0.0.0.0 --port 8010`). If you do see `ModuleNotFoundError`, just re-run the [install steps below](#clone-and-install) against the 3.12 interpreter — order matters (torch first, then pin numpy, then the rest).
 
@@ -372,6 +372,13 @@ pytest tests/ -v
 
 The following integration scenarios have been validated manually end-to-end:
 - Full pipeline on real M4A files (2 min, 8 min, 30 min)
+- Full pipeline on a 3h42m recording (job `b6d7567a`, 2026-10-17, untrimmed, 2 speakers, accurate mode; Windows 11, GTX 1650 4 GB, 7.4 GB RAM). One measured run on this hardware, not a guarantee of longer files:
+  - Duration 13,356 s (3h42m36s). Total pipeline 2:11:20, about 0.6x real time.
+  - Stage 1 noise reduction 2:23. Stage 2 diarization 15:27 (embeddings 13:38), 4,576 segments. Stage 3 transcription 1:52:51, 3,361 transcribed segments.
+  - Stage 3 dominates the runtime, at roughly 1.5 s per diarization segment, so runtime grows with the amount of speech, not only the duration.
+  - Stage 5 with `claude-haiku-5-5`: 227,838-character transcript, report in 0:38.
+  - Whisper model released after the job: VRAM free 3.16 of 4.00 GB, process commit 3.10 GB at job end.
+  - The commit-headroom preflight budget is about 5.4 GB plus 100 MB per audio hour (see [KNOWN-ISSUES.md](KNOWN-ISSUES.md) §1). Stage 2 still loads the whole waveform for the segmentation pass, so memory still grows with length. Recordings longer than 3h42m are untested.
 - Stage 1 noise reduction producing clean WAV
 - Stage 2 diarization identifying 2 speakers
 - Stage 3 transcription in accurate and fast modes
