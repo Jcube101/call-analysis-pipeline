@@ -267,9 +267,10 @@ def run(
     instruction_prompt = _load_prompt(context, prompts_dir)
     if context_hints.strip():
         instruction_prompt = (
-            "CONTEXT HINTS (use these for correct spelling "
-            "of names, places, companies, and technical terms "
-            "— do not infer alternatives):\n"
+            "CONTEXT HINTS (authoritative facts from the user — treat them "
+            "as true, including who is who, over the speaker labels and "
+            "your own inference; use them for the correct spelling of "
+            "names, places, companies, and technical terms):\n"
             f"{context_hints.strip()}\n\n"
             + instruction_prompt
         )

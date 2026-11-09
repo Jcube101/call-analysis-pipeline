@@ -216,7 +216,7 @@ Supports both Anthropic Claude (`claude-*` models) and Google Gemini (`gemini-*`
 | Alternative API | `google-genai` SDK, `gemini-3.8-flash` or `gemini-4-argon` |
 | Prompt | Loaded from `prompts/<context>.md`; falls back to built-in defaults |
 | Metadata | Source file, context, speaker count, audio duration, per-speaker segment counts |
-| Context hints | Optional `context_hints` parameter prepended to system prompt for correct spelling of names, places, and terms |
+| Context hints | Optional `context_hints` parameter prepended to system prompt under a header that marks them as authoritative facts: correct spelling of names, places, and terms, and who each speaker is (trusted over the speaker labels) |
 | Chunking | Transcripts >500k chars split into overlapping chunks; partial reports synthesised in a second API call |
 | Output | `output/<name>_<YYYYMMDD_HHMMSS>_report.md` — header includes source, context, speakers, actual model used, and timestamp |
 | Terminal preview | First 20 lines of the report are printed after Stage 5 completes |
@@ -224,7 +224,7 @@ Supports both Anthropic Claude (`claude-*` models) and Google Gemini (`gemini-*`
 | Truncation | A response stopped by the output token limit raises an error rather than writing a truncated report |
 | Warnings | `run(warnings=...)` adds `Warning:` lines to the metadata block the model sees and `**Warning:** ...` lines to the report header after `**Generated:**`; with no warnings both are unchanged. `--from-json` and `/report-from-json` take them from the uploaded file's `metadata.warnings` |
 
-**Prompt customisation:** Edit `prompts/<context>.md` to change what the LLM focuses on for each conversation type. The six built-in contexts are `friend`, `work`, `work_interview`, `user_interview`, `public_interview`, and `date`. Each prompt defines specific output sections and includes a speaker label reliability warning — pyannote's automatic diarisation can flip speaker labels on long recordings, so prompts instruct the model to base analysis on content rather than assuming label consistency.
+**Prompt customisation:** Edit `prompts/<context>.md` to change what the LLM focuses on for each conversation type. The six built-in contexts are `friend`, `work`, `work_interview`, `user_interview`, `public_interview`, and `date`. Each prompt defines specific output sections and includes the same "Identifying speakers" block — pyannote's automatic diarisation can flip speaker labels on long recordings, so prompts tell the model to treat who-is-who context hints as ground truth, otherwise to identify speakers from what they say rather than from the labels, to attribute weakly evidenced lines to "one of them", to make no talk-share claims when labels are unreliable, and to state its identification confidence once at the top of the report.
 
 **`--from-json` mode:** `main.py` supports `python main.py --from-json output/<name>.json` to run Stage 5 on an existing transcript without re-running Stages 1–4. Context and speaker count are read from the JSON metadata and can be overridden with `--context`.
 
