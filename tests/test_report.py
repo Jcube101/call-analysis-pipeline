@@ -421,3 +421,82 @@ def test_report_header_and_prompt_show_warnings(tmp_path, sample_segments):
     assert lines[9:12] == ["", "---", ""]
     assert f"Warning:      {_WARNING}" in user_message
     assert f"Warning:      {second}" in user_message
+
+
+# ---------------------------------------------------------------------------
+# Speaker identification -- CONTEXT HINTS header and the shared prompt block
+# ---------------------------------------------------------------------------
+
+_PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts")
+_PROMPT_CONTEXTS = ("friend", "work", "work_interview", "user_interview", "public_interview", "date")
+
+
+def _system_prompt_for(tmp_path, sample_segments, context_hints):
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir(exist_ok=True)
+    (prompts_dir / "friend.md").write_text("Friend instructions", encoding="utf-8")
+    with patch("stages.report._call_claude", return_value=("# Body", "claude-haiku-5-5")) as mock:
+        report.run(
+            segments=sample_segments,
+            source_file="test_call.mp3",
+            output_dir=str(tmp_path),
+            context="friend",
+            num_speakers=2,
+            audio_duration=15.8,
+            speaker_counts={"Speaker A": 2, "Speaker B": 1},
+            prompts_dir=str(prompts_dir),
+            analysis_model="claude-haiku-5-5",
+            anthropic_api_key="fake-key",
+            context_hints=context_hints,
+        )
+    return mock.call_args.args[1]
+
+
+def test_context_hints_header_says_hints_are_authoritative(tmp_path, sample_segments):
+    system_prompt = _system_prompt_for(
+        tmp_path, sample_segments, "  Sarah works at Acme; Job asks the questions.  \n"
+    )
+    assert system_prompt == (
+        "CONTEXT HINTS (authoritative facts from the user — treat them as true, "
+        "including who is who, over the speaker labels and your own inference; "
+        "use them for the correct spelling of names, places, companies, and "
+        "technical terms):\n"
+        "Sarah works at Acme; Job asks the questions.\n\n"
+        "Friend instructions"
+    )
+
+
+@pytest.mark.parametrize("hints", ["", "   \n"])
+def test_no_context_hints_leaves_system_prompt_unchanged(tmp_path, sample_segments, hints):
+    assert _system_prompt_for(tmp_path, sample_segments, hints) == "Friend instructions"
+
+
+def _speaker_block(prompt):
+    start = prompt.index("**Identifying speakers:**")
+    return prompt[start:prompt.index("\n\n---", start)]
+
+
+@pytest.mark.parametrize("context", _PROMPT_CONTEXTS)
+def test_prompt_file_has_identifying_speakers_block(context):
+    prompt = _load_prompt(context, _PROMPTS_DIR)
+    assert prompt != _DEFAULT_PROMPTS.get(context), "prompt file missing; got the built-in default"
+    assert prompt.count("**Identifying speakers:**") == 1
+    assert "speaker label reliability" not in prompt
+    block = _speaker_block(prompt)
+    for phrase in (
+        "CONTEXT HINTS say who is who, treat that as ground truth",
+        "first-person statements",
+        "addressed by name",
+        'attribute it to "one of them"',
+        "no quantitative claims about who talked more or less",
+        "qualitatively",
+        "**Speaker identification confidence:** High / Medium / Low",
+    ):
+        assert phrase in block, f"{context}: missing {phrase!r}"
+
+
+def test_identifying_speakers_block_is_identical_in_every_prompt():
+    on_disk = sorted(f[:-3] for f in os.listdir(_PROMPTS_DIR) if f.endswith(".md"))
+    assert on_disk == sorted(_PROMPT_CONTEXTS)
+    blocks = {c: _speaker_block(_load_prompt(c, _PROMPTS_DIR)) for c in _PROMPT_CONTEXTS}
+    assert len(set(blocks.values())) == 1, "Identifying speakers block differs between prompt files"

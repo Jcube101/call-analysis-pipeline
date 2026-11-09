@@ -229,7 +229,7 @@ The completion banner shows a full run summary:
 
 When `--report` is passed, Stage 5 sends the transcript to an LLM and writes a context-aware Markdown report. By default it uses `claude-haiku-5-5` via the Anthropic API; Gemini models are also supported. Pick the model with `--report-model` (CLI) or the `analysis_model` parameter (API); the provider comes from the registry in `models.py`. The prompt is loaded from `prompts/<context>.md` — edit these files freely to customise the analysis focus. The report header includes the model that was actually used (including any fallback).
 
-Each prompt defines structured output sections and includes a speaker reliability warning (pyannote's diarisation can flip labels on long recordings — the LLM is instructed to base analysis on content, not label consistency).
+Each prompt defines structured output sections and includes the same "Identifying speakers" block (pyannote's diarisation can flip labels on long recordings). It tells the model to treat who-is-who facts in the context hints as ground truth, otherwise to identify speakers from what they say rather than from the labels, to write "one of them" when the evidence is weak, to avoid numbers about who talked more when the labels are unreliable, and to state its identification confidence once, as the report's first line.
 
 | Context | Output sections |
 |---------|----------------|
@@ -339,6 +339,17 @@ Jobs run one at a time (GPU constraint). All outputs land in `output/jobs/{job_i
 
 Both `POST /analyse` and `POST /report-from-json` accept an optional `context_hints` parameter (free text) for correct spelling of names, places, companies, and technical terms. When provided, the hints are prepended to the system prompt so the LLM uses them for proper nouns in the report.
 
+**Speaker identification hints.** The model treats context hints as authoritative facts and trusts them over the speaker labels and its own guesses. To fix who is who, give two or three facts per person that come up in the conversation:
+
+```text
+Speakers:
+- <Name 1>: <fact, e.g. works at Acme as a designer>; <fact, e.g. lives in Leeds>; <fact, e.g. asks most of the questions>
+- <Name 2>: <fact>; <fact>; <fact>
+Spellings: <names, places, companies, terms>
+```
+
+The model matches these facts against what each person says, so a fact that never comes up in the recording does not help.
+
 ### Progress and warnings
 
 WebSocket `progress` messages carry `stage`, `stage_name` and `message`. During Stages 1–3 they also carry `phase` and `percent`:
@@ -376,7 +387,7 @@ Run the pytest unit test suite:
 pytest tests/ -v
 ```
 
-250 tests across 9 modules. Covers: config loading, export formatting (including warning lines), API job recovery, the `analysis_model` field and the removed `gemini_model` field, re-identification warnings end to end, the Whisper release after each job, report prompt loading and warning headers, model fallback and the model registry, the progress throttle, the Stage 2 re-identification outcome, `tools/merge_transcripts.py`, `tools/swap_speakers.py`, and API key leak prevention across all output surfaces.
+260 tests across 9 modules. Covers: config loading, export formatting (including warning lines), API job recovery, the `analysis_model` field and the removed `gemini_model` field, re-identification warnings end to end, the Whisper release after each job, report prompt loading and warning headers, the context-hints header and the shared "Identifying speakers" prompt block, model fallback and the model registry, the progress throttle, the Stage 2 re-identification outcome, `tools/merge_transcripts.py`, `tools/swap_speakers.py`, and API key leak prevention across all output surfaces.
 
 ### Integration tests (manual, completed)
 
